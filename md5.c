@@ -10,7 +10,7 @@
  *
  *	Sverre H. Huseby <sverrehu@online.no>
  *
- * $Header: /cvsroot/psqlodbc/psqlodbc/md5.c,v 1.2 2001/11/12 01:56:12 momjian Exp $
+ * $Header: /cvsroot/psqlodbc/psqlodbc/md5.c,v 1.3 2001/11/12 01:59:43 momjian Exp $
  */
 
 
