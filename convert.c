@@ -4370,27 +4370,27 @@ mylog("C_WCHAR=%s(%d)\n", buffer, used);
 				break;
 		case SQL_C_INTERVAL_YEAR:
 			ivsign = ivstruct->interval_sign ? "-" : "";
-			sprintf(param_string, "%s%d years", ivsign, ivstruct->intval.year_month.year);
+			sprintf(param_string, "%s" FORMAT_UINTEGER " years", ivsign, ivstruct->intval.year_month.year);
 			break;
 		case SQL_C_INTERVAL_MONTH:
 		case SQL_C_INTERVAL_YEAR_TO_MONTH:
 			ivsign = ivstruct->interval_sign ? "-" : "";
-			sprintf(param_string, "%s%d years %s%d mons", ivsign, ivstruct->intval.year_month.year, ivsign, ivstruct->intval.year_month.month);
+			sprintf(param_string, "%s" FORMAT_UINTEGER " years %s" FORMAT_UINTEGER " mons", ivsign, ivstruct->intval.year_month.year, ivsign, ivstruct->intval.year_month.month);
 			break;
 		case SQL_C_INTERVAL_DAY:
 			ivsign = ivstruct->interval_sign ? "-" : "";
-			sprintf(param_string, "%s%d days", ivsign, ivstruct->intval.day_second.day);
+			sprintf(param_string, "%s" FORMAT_UINTEGER " days", ivsign, ivstruct->intval.day_second.day);
 			break;
 		case SQL_C_INTERVAL_HOUR:
 		case SQL_C_INTERVAL_DAY_TO_HOUR:
 			ivsign = ivstruct->interval_sign ? "-" : "";
-			sprintf(param_string, "%s%d days %s%02d:00:00", ivsign, ivstruct->intval.day_second.day, ivsign, ivstruct->intval.day_second.hour);
+			sprintf(param_string, "%s" FORMAT_UINTEGER " days %s%02u:00:00", ivsign, ivstruct->intval.day_second.day, ivsign, ivstruct->intval.day_second.hour);
 			break;
 		case SQL_C_INTERVAL_MINUTE:
 		case SQL_C_INTERVAL_HOUR_TO_MINUTE:
 		case SQL_C_INTERVAL_DAY_TO_MINUTE:
 			ivsign = ivstruct->interval_sign ? "-" : "";
-			sprintf(param_string, "%s%d days %s%02d:%02d:00", ivsign, ivstruct->intval.day_second.day, ivsign, ivstruct->intval.day_second.hour, ivstruct->intval.day_second.minute);
+			sprintf(param_string, "%s" FORMAT_UINTEGER " days %s%02u:%02u:00", ivsign, ivstruct->intval.day_second.day, ivsign, ivstruct->intval.day_second.hour, ivstruct->intval.day_second.minute);
 			break;
 
 		case SQL_C_INTERVAL_SECOND:
@@ -4398,7 +4398,7 @@ mylog("C_WCHAR=%s(%d)\n", buffer, used);
 		case SQL_C_INTERVAL_HOUR_TO_SECOND:
 		case SQL_C_INTERVAL_MINUTE_TO_SECOND:
 			ivsign = ivstruct->interval_sign ? "-" : "";
-			sprintf(param_string, "%s%d days %s%02d:%02d:%02d",
+			sprintf(param_string, "%s" FORMAT_UINTEGER " days %s%02u:%02u:%02u",
 				ivsign, ivstruct->intval.day_second.day,
 				ivsign, ivstruct->intval.day_second.hour,
 				ivstruct->intval.day_second.minute,
