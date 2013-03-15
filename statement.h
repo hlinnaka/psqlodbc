@@ -182,6 +182,7 @@ struct StatementClass_
 								 * statement belongs to */
 	QResultClass *result;		/* result of the current statement */
 	QResultClass *curres;		/* the current result in the chain */
+	QResultClass *lastres;		/* last result in the result->next chain */
 	HSTMT FAR  *phstmt;
 	StatementOptions options;
 	StatementOptions options_orig;
@@ -290,6 +291,7 @@ void SC_set_Result(StatementClass *self, QResultClass *res);
 #define SC_get_Result(a)  (a->result)
 #define SC_set_Curres(a, b)  (a->curres = b)
 #define SC_get_Curres(a)  (a->curres)
+extern QResultClass *SC_get_Lastres(StatementClass *self);
 #define SC_get_ARD(a)  (a->ard)
 #define SC_get_APD(a)  (a->apd)
 #define SC_get_IRD(a)  (a->ird)

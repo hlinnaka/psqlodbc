@@ -383,6 +383,7 @@ SC_Constructor(ConnectionClass *conn)
 		rv->hdbc = conn;
 		rv->phstmt = NULL;
 		rv->result = NULL;
+		rv->lastres = NULL;
 		rv->curres = NULL;
 		rv->catalog_result = FALSE;
 		rv->prepare = NON_PREPARE_STATEMENT;
@@ -525,7 +526,7 @@ SC_Destructor(StatementClass *self)
 void
 SC_init_Result(StatementClass *self)
 {
-	self->result = self->curres = NULL;
+	self->result = self->lastres = self->curres = NULL;
 	self->curr_param_result = 0;
 	mylog("SC_init_Result(%x)", self);
 }
@@ -537,9 +538,22 @@ SC_set_Result(StatementClass *self, QResultClass *res)
 	{
 		mylog("SC_set_Result(%x, %x)", self, res);
 		QR_Destructor(self->result);
-		self->result = self->curres = res;
+		self->result = self->lastres = self->curres = res;
 		if (NULL != res)
+		{
+			/*
+			 * Set the owner of 'res', and all results chained
+			 * to it. They all belong to this statement now.
+			 */
+			QResultClass *t;
+			for (t = res; t != NULL; t = t->next)
+			{
+				t->stmt = self;
+				/* also update lastres while we're at it */
+				self->lastres = t;
+			}
 			self->curr_param_result = 1;
+		}
 	}
 }
 
@@ -1573,6 +1587,28 @@ PGAPI_StmtError(	SQLHSTMT	hstmt,
 		pcbErrorMsg, flag);
 }
 
+/*
+ * Get the last result in the results chain.
+ */
+QResultClass *
+SC_get_Lastres(StatementClass *self)
+{
+	QResultClass *res;
+
+	res = self->lastres;
+	if (res == NULL)
+		res = NULL;
+	else
+	{
+		while (res->next != NULL)
+			res = res->next;
+	}
+
+	/* update the cached value while we're at it */
+	self->lastres = res;
+	return res;
+}
+
 time_t
 SC_get_time(StatementClass *stmt)
 {
@@ -1978,7 +2014,7 @@ SC_execute(StatementClass *self)
 				SC_set_error(self, STMT_EXEC_ERROR, "Execute request error", func);
 			goto cleanup;
 		}
-		for (res = SC_get_Result(self); NULL != res && NULL != res->next; res = res->next) ;
+		res = SC_get_Lastres(self);
 inolog("get_Result=%p %p %d\n", res, SC_get_Result(self), self->curr_param_result);
 		if (!(res = SendSyncAndReceive(self, self->curr_param_result ? res : NULL, "bind_and_execute")))
 		{
@@ -2193,20 +2229,28 @@ inolog("res->next=%p\n", tres);
 			CC_abort(conn);
 #endif /* _LEGACY_MODE_ */
 	}
-	if (!SC_get_Result(self))
-		SC_set_Result(self, res);
-	else
-	{
-		QResultClass	*last;
 
-		for (last = SC_get_Result(self); NULL != last->next; last = last->next)
+	/*
+	 * Add 'res' to the end of the result chain, if it's not in the chain
+	 * already.
+	 */
+	if (res->stmt != self)
+	{
+		/* the result should not belong to any other statement */
+		/* assert (res->stmt == NULL) */
+		QResultClass	*last = SC_get_Lastres(self);
+		if (last == NULL)
+			SC_set_Result(self, res);
+		else
 		{
-			if (last == res)
-				break;
-		}
-		if (last != res)
+			QResultClass *t;
+			for (t = res; t != NULL; t = t->next)
+				t->stmt = self;
+
 			last->next = res;
-		self->curr_param_result = 1;
+			self->curr_param_result = 1;
+			res->stmt = self;
+		}
 	}
 
 	ipdopts = SC_get_IPDF(self);

@@ -55,6 +55,7 @@ struct QResultClass_
 	ColumnInfoClass *fields;	/* the Column information */
 	ConnectionClass *conn;		/* the connection this result is using
 								 * (backend) */
+	StatementClass *stmt;		/* the statement this result belongs to. */
 	QResultClass	*next;		/* the following result class */
 
 	/* Stuff for declare/fetch tuples */

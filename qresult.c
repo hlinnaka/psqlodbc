@@ -163,6 +163,7 @@ QR_Constructor()
 		rv->command = NULL;
 		rv->notice = NULL;
 		rv->conn = NULL;
+		rv->stmt = NULL;
 		rv->next = NULL;
 		rv->pstatus = 0;
 		rv->count_backend_allocated = 0;
@@ -1234,6 +1235,7 @@ inolog("id='%c' response_length=%d\n", id, response_length);
 					CC_on_abort(conn, CONN_DEAD);
 					return FALSE;
 				}
+				self->next->stmt = self->stmt;
 				QR_set_cache_size(self->next, self->cache_size);
 				self = self->next;
 				if (!QR_fetch_tuples(self, conn, NULL, LastMessageType))
