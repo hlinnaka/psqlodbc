@@ -1149,6 +1149,12 @@ next_param_row:
 		}
 	}
 
+	/*
+	 * Clear any old result sets before executing. The prepare stage might've
+	 * created one.
+	 */
+	SC_set_Result(stmt, NULL);
+
 	if (0 != (flag & PODBC_WITH_HOLD))
 		SC_set_with_hold(stmt);
 	retval = Exec_with_parameters_resolved(stmt, &exec_end);
