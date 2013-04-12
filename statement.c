@@ -563,7 +563,7 @@ SC_forget_unnamed(StatementClass *self)
 	if (PREPARED_TEMPORARILY == self->prepared)
 	{
 		SC_set_prepared(self, ONCE_DESCRIBED);
-		if (FALSE && !SC_IsExecuting(self))
+		if (!SC_IsExecuting(self))
 		{
 			QResultClass	*res = SC_get_Curres(self);
 			if (NULL != res && !res->dataFilled && !QR_is_fetching_tuples(res))
