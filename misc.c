@@ -225,7 +225,7 @@ schema_strcat(char *buf, const char *fmt, const char *s, ssize_t len, const char
 		 * the CURRENT_SCHEMA() though it doesn't worth the
 		 * naming.
 		 */
-		if (conn->schema_support && tbname && (tbnmlen > 0 || tbnmlen == SQL_NTS))
+		if (tbname && (tbnmlen > 0 || tbnmlen == SQL_NTS))
 			return my_strcat(buf, fmt, CC_get_current_schema(conn), SQL_NTS);
 		return NULL;
 	}
@@ -290,7 +290,7 @@ schema_strcat1(char *buf, const char *fmt, const char *s1, const char *s, ssize_
 {
 	if (!s || 0 == len)
 	{
-		if (conn->schema_support && tbname && (tbnmlen > 0 || tbnmlen == SQL_NTS))
+		if (tbname && (tbnmlen > 0 || tbnmlen == SQL_NTS))
 			return my_strcat1(buf, fmt, s1, CC_get_current_schema(conn), SQL_NTS);
 		return NULL;
 	}

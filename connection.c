@@ -60,7 +60,6 @@
 
 #define PRN_NULLCHECK
 
-static void CC_lookup_pg_version(ConnectionClass *self);
 static void CC_lookup_lo(ConnectionClass *self);
 static char *CC_create_errormsg(ConnectionClass *self);
 static int  CC_close_eof_cursors(ConnectionClass *self);
@@ -843,11 +842,9 @@ inolog("md5 pwd=%s user=%s salt=%02x%02x%02x%02x%02x\n", PRINT_NAME(ci->password
 		return 1;
 	}
 	free(pwd1);
-	if (PROTOCOL_74(&(self->connInfo)))
-{
-inolog("putting p and %s\n", pwd2);
-		SOCK_put_char(sock, 'p');
-}
+	inolog("putting p and %s\n", pwd2);
+	SOCK_put_char(sock, 'p');
+
 	md5len = strlen(pwd2);
 	SOCK_put_int(sock, (Int4) (4 + md5len + 1), 4);
 	SOCK_put_n_char(sock, pwd2, (md5len + 1));
@@ -861,110 +858,76 @@ int
 EatReadyForQuery(ConnectionClass *conn)
 {
 	int	id = 0;
+	BOOL	is_in_error_trans = CC_is_in_error_trans(conn);
 
-	if (PROTOCOL_74(&(conn->connInfo)))
+	switch (id = SOCK_get_char(conn->sock))
 	{
-		BOOL	is_in_error_trans = CC_is_in_error_trans(conn);
-		switch (id = SOCK_get_char(conn->sock))
-		{
-			case 'I':
-				if (CC_is_in_trans(conn))
-				{
-					if (is_in_error_trans)
-						CC_on_abort(conn, NO_TRANS);
-					else
-						CC_on_commit(conn);
-				}
-				break;
-			case 'T':
-				CC_set_in_trans(conn);
-				CC_set_no_error_trans(conn);
+		case 'I':
+			if (CC_is_in_trans(conn))
+			{
 				if (is_in_error_trans)
-					CC_on_abort_partial(conn);
-				break;
-			case 'E':
-				CC_set_in_error_trans(conn);
-				break;	
-		}
-		conn->stmt_in_extquery = NULL;
+					CC_on_abort(conn, NO_TRANS);
+				else
+					CC_on_commit(conn);
+			}
+			break;
+		case 'T':
+			CC_set_in_trans(conn);
+			CC_set_no_error_trans(conn);
+			if (is_in_error_trans)
+				CC_on_abort_partial(conn);
+			break;
+		case 'E':
+			CC_set_in_error_trans(conn);
+			break;
 	}
+	conn->stmt_in_extquery = NULL;
+
 	return id;	
 }
 
 int
 handle_error_message(ConnectionClass *self, char *msgbuf, size_t buflen, char *sqlstate, const char *comment, QResultClass *res)
 {
-	BOOL	new_format = FALSE, msg_truncated = FALSE, truncated, hasmsg = FALSE;
+	BOOL	msg_truncated = FALSE, truncated, hasmsg = FALSE;
 	SocketClass	*sock = self->sock;
-	ConnInfo	*ci = &(self->connInfo);
 	char	msgbuffer[ERROR_MSG_LENGTH];
 	UDWORD	abort_opt;
 
-	inolog("handle_error_message protocol=%s\n", ci->protocol);
-	if (PROTOCOL_74(ci))
-		new_format = TRUE;
-	else if (PROTOCOL_74REJECTED(ci))
+	inolog("handle_error_message\n");
+
+	truncated = SOCK_get_string(sock, msgbuffer, sizeof(msgbuffer));
+
+	msgbuf[0] = '\0';
+	for (;msgbuffer[0];)
 	{
-		if (!SOCK_get_next_byte(sock, TRUE)) /* peek the next byte */
+		mylog("%s: 'E' - %s\n", comment, msgbuffer);
+		qlog("ERROR from backend during %s: '%s'\n", comment, msgbuffer);
+		switch (msgbuffer[0])
 		{
-			uint32	leng;
-
-			mylog("peek the next byte = \\0\n");
-			new_format = TRUE;
-			strncpy_null(ci->protocol, PG74, sizeof(ci->protocol));
-			leng = SOCK_get_response_length(sock);
-			inolog("get the response length=%d\n", leng);
+			case 'S':
+				strlcat(msgbuf, msgbuffer + 1, buflen);
+				strlcat(msgbuf, ": ", buflen);
+				break;
+			case 'M':
+			case 'D':
+				if (hasmsg)
+					strlcat(msgbuf, "\n", buflen);
+				strlcat(msgbuf, msgbuffer + 1, buflen);
+				if (truncated)
+					msg_truncated = truncated;
+				hasmsg = TRUE;
+				break;
+			case 'C':
+				if (sqlstate)
+					strncpy_null(sqlstate, msgbuffer + 1, 8);
+				break;
 		}
-	}
-
-inolog("new_format=%d\n", new_format);
-	truncated = SOCK_get_string(sock,
-								new_format ? msgbuffer : msgbuf,
-								new_format ? sizeof(msgbuffer) : (Int4) buflen);
-	if (new_format)
-	{
-		msgbuf[0] = '\0';
-		for (;msgbuffer[0];)
-		{
-			mylog("%s: 'E' - %s\n", comment, msgbuffer);
-			qlog("ERROR from backend during %s: '%s'\n", comment, msgbuffer);
-			switch (msgbuffer[0])
-			{
-				case 'S':
-					strlcat(msgbuf, msgbuffer + 1, buflen);
-					strlcat(msgbuf, ": ", buflen);
-					break;
-				case 'M':
-				case 'D':
-					if (hasmsg)
-						strlcat(msgbuf, "\n", buflen);
-					strlcat(msgbuf, msgbuffer + 1, buflen);
-					if (truncated)
-						msg_truncated = truncated;
-					hasmsg = TRUE;
-					break;
-				case 'C':
-					if (sqlstate)
-						strncpy_null(sqlstate, msgbuffer + 1, 8);
-					break;
-			}
-			while (truncated)
-				truncated = SOCK_get_string(sock, msgbuffer, sizeof(msgbuffer));
-			truncated = SOCK_get_string(sock, msgbuffer, sizeof(msgbuffer));
-		}
-	}
-	else
-	{
-		msg_truncated = truncated;
-		/* Remove a newline */
-		if (msgbuf[0] != '\0' && msgbuf[(int)strlen(msgbuf) - 1] == '\n')
-			msgbuf[(int)strlen(msgbuf) - 1] = '\0';
-
-		mylog("%s: 'E' - %s\n", comment, msgbuf);
-		qlog("ERROR from backend during %s: '%s'\n", comment, msgbuf);
 		while (truncated)
 			truncated = SOCK_get_string(sock, msgbuffer, sizeof(msgbuffer));
+		truncated = SOCK_get_string(sock, msgbuffer, sizeof(msgbuffer));
 	}
+
 	abort_opt = 0;
 	if (!strncmp(msgbuf, "FATAL", 5))
 	{
@@ -996,66 +959,47 @@ inolog("new_format=%d\n", new_format);
 int
 handle_notice_message(ConnectionClass *self, char *msgbuf, size_t buflen, char *sqlstate, const char *comment, QResultClass *res)
 {
-	BOOL	new_format = FALSE, msg_truncated = FALSE, truncated, hasmsg = FALSE;
+	BOOL	msg_truncated = FALSE, truncated, hasmsg = FALSE;
 	SocketClass	*sock = self->sock;
 	char	msgbuffer[ERROR_MSG_LENGTH];
+	size_t	dstlen = 0;
 
-	if (PROTOCOL_74(&(self->connInfo)))
-		new_format = TRUE;
-
-	if (new_format)
+	msgbuf[0] = '\0';
+	for (;;)
 	{
-		size_t	dstlen = 0;
+		truncated = SOCK_get_string(sock, msgbuffer, sizeof(msgbuffer));
+		if (!msgbuffer[0])
+			break;
 
-		msgbuf[0] = '\0';
-		for (;;)
+		mylog("%s: 'N' - %s\n", comment, msgbuffer);
+		qlog("NOTICE from backend during %s: '%s'\n", comment, msgbuffer);
+		switch (msgbuffer[0])
 		{
-			truncated = SOCK_get_string(sock, msgbuffer, sizeof(msgbuffer));
-			if (!msgbuffer[0])
+			case 'S':
+				strlcat(msgbuf, msgbuffer + 1, buflen);
+				dstlen = strlcat(msgbuf, ": ", buflen);
 				break;
-
-			mylog("%s: 'N' - %s\n", comment, msgbuffer);
-			qlog("NOTICE from backend during %s: '%s'\n", comment, msgbuffer);
-			switch (msgbuffer[0])
-			{
-				case 'S':
-					strlcat(msgbuf, msgbuffer + 1, buflen);
-					dstlen = strlcat(msgbuf, ": ", buflen);
-					break;
-				case 'M':
-				case 'D':
-					if (hasmsg)
-						strlcat(msgbuf, "\n", buflen);
-					dstlen = strlcat(msgbuf, msgbuffer + 1, buflen);
-					if (truncated)
-						msg_truncated = truncated;
-					hasmsg = TRUE;
-					break;
-				case 'C':
-					if (sqlstate && !sqlstate[0] && strcmp(msgbuffer + 1, "00000"))
-						strncpy_null(sqlstate, msgbuffer + 1, 8);
-					break;
-			}
-			if (dstlen >= buflen)
-				msg_truncated = TRUE;
-			while (truncated)
-				truncated = SOCK_get_string(sock, msgbuffer, sizeof(msgbuffer));
+			case 'M':
+			case 'D':
+				if (hasmsg)
+					strlcat(msgbuf, "\n", buflen);
+				dstlen = strlcat(msgbuf, msgbuffer + 1, buflen);
+				if (truncated)
+					msg_truncated = truncated;
+				hasmsg = TRUE;
+				break;
+			case 'C':
+				if (sqlstate && !sqlstate[0] && strcmp(msgbuffer + 1, "00000"))
+					strncpy_null(sqlstate, msgbuffer + 1, 8);
+				break;
 		}
-mylog("notice message len=%d\n", strlen(msgbuf));
-	}
-	else
-	{
-		msg_truncated = SOCK_get_string(sock, msgbuf, (Int4) buflen);
-
-		/* Remove a newline */
-		if (msgbuf[0] != '\0' && msgbuf[strlen(msgbuf) - 1] == '\n')
-			msgbuf[strlen(msgbuf) - 1] = '\0';
-
-		mylog("%s: 'N' - %s\n", comment, msgbuf);
-		qlog("NOTICE from backend during %s: '%s'\n", comment, msgbuf);
-		for (truncated = msg_truncated; truncated;)
+		if (dstlen >= buflen)
+			msg_truncated = TRUE;
+		while (truncated)
 			truncated = SOCK_get_string(sock, msgbuffer, sizeof(msgbuffer));
 	}
+mylog("notice message len=%d\n", strlen(msgbuf));
+
 	if (res)
 	{
 		if (QR_command_successful(res))
@@ -1114,8 +1058,6 @@ inolog("parameter name=%s\n", msgbuffer);
 			conn->pg_version_minor = minor;
 		}
 		conn->pg_version_number = (float) atof(szVersion);
-		if (PG_VERSION_GE(conn, 7.3))
-			conn->schema_support = 1;
 
 		mylog("Got the PostgreSQL version string: '%s'\n", conn->pg_version);
 		mylog("Extracted PostgreSQL version number: '%1.1f'\n", conn->pg_version_number);
@@ -1393,9 +1335,8 @@ static char CC_initial_log(ConnectionClass *self, const char *func)
 		 ci->drivers.unknown_sizes,
 		 ci->drivers.max_varchar_size,
 		 ci->drivers.max_longvarchar_size);
-	qlog("                disable_optimizer=%d, ksqo=%d, unique_index=%d, use_declarefetch=%d\n",
+	qlog("                disable_optimizer=%d, unique_index=%d, use_declarefetch=%d\n",
 		 ci->drivers.disable_optimizer,
-		 ci->drivers.ksqo,
 		 ci->drivers.unique_index,
 		 ci->drivers.use_declarefetch);
 	qlog("                text_as_longvarchar=%d, unknowns_as_longvarchar=%d, bools_as_char=%d NAMEDATALEN=%d\n",
@@ -1508,9 +1449,6 @@ mylog("!!! %s settings=%s svcname=%p\n", __FUNCTION__, ci->conn_settings, svcnam
 static char
 original_CC_connect(ConnectionClass *self, char password_req, char *salt_para)
 {
-	StartupPacket sp;
-	StartupPacket6_2 sp62;
-	QResultClass *res;
 	SocketClass *sock;
 	ConnInfo   *ci = &(self->connInfo);
 	int		areq = -1;
@@ -1569,28 +1507,13 @@ another_version_retry:
 		if (anotherVersionRetry)
 		{
 #ifdef	USE_SSPI
-			if (PROTOCOL_74(ci) || PROTOCOL_64(ci))
-			{
-				if (ssl_try_no < ssl_try_count)
-					ssl_try_no++;
-			}
-			else
-				ssl_try_no = ssl_try_count;
+			if (ssl_try_no < ssl_try_count)
+				ssl_try_no++;
 			if (ssl_try_no >= ssl_try_count)
 			{
 #endif /* USE_SSPI */
-				/* retry older version */
-				if (PROTOCOL_62(ci))
-				{
-					CC_set_error(self, CONNECTION_SERVER_NOT_REACHED, "Could not construct a socket to the server", func);
-					goto error_proc;
-				}
-				if (PROTOCOL_63(ci))
-					strncpy_null(ci->protocol, PG62, sizeof(ci->protocol));
-				else if (PROTOCOL_64(ci))
-					strncpy_null(ci->protocol, PG63, sizeof(ci->protocol));
-				else 
-					strncpy_null(ci->protocol, PG64, sizeof(ci->protocol));
+				CC_set_error(self, CONNECTION_SERVER_NOT_REACHED, "Could not construct a socket to the server", func);
+				goto error_proc;
 #ifdef	USE_SSPI
 				ssl_try_no = 0;
 			}
@@ -1630,7 +1553,7 @@ another_version_retry:
 		}
 		mylog("connection to the server socket succeeded.\n");
 
-inolog("protocol=%s version=%d,%d\n", ci->protocol, self->pg_version_major, self->pg_version_minor);
+inolog("version=%d,%d\n", self->pg_version_major, self->pg_version_minor);
 #ifdef	USE_SSPI
 		if ('y' == ssl_call[ssl_try_no])
 		{
@@ -1678,46 +1601,8 @@ inolog("protocol=%s version=%d,%d\n", ci->protocol, self->pg_version_major, self
 			}
 		}
 #endif /* USE_SSPI */
-		if (PROTOCOL_62(ci))
-		{
-			sock->reverse = TRUE;		/* make put_int and get_int work
-										 * for 6.2 */
-
-			memset(&sp62, 0, sizeof(StartupPacket6_2));
-			sock->pversion = PG_PROTOCOL_62;
-			SOCK_put_int(sock, htonl(4 + sizeof(StartupPacket6_2)), 4);
-			sp62.authtype = htonl(NO_AUTHENTICATION);
-			strncpy_null(sp62.database, ci->database, PATH_SIZE);
-			strncpy_null(sp62.user, ci->username, USRNAMEDATALEN);
-			SOCK_put_n_char(sock, (char *) &sp62, sizeof(StartupPacket6_2));
-			SOCK_flush_output(sock);
-		}
-		else if (PROTOCOL_74(ci))
-		{
-			if (!protocol3_packet_build(self))
-				goto error_proc;
-		}
-		else
-		{
-			memset(&sp, 0, sizeof(StartupPacket));
-
-			mylog("sizeof startup packet = %d\n", sizeof(StartupPacket));
-
-			if (PROTOCOL_63(ci))
-				sock->pversion = PG_PROTOCOL_63;
-			else
-				sock->pversion = PG_PROTOCOL_64;
-			/* Send length of Authentication Block */
-			SOCK_put_int(sock, 4 + sizeof(StartupPacket), 4);
-
-			sp.protoVersion = (ProtocolVersion) htonl(sock->pversion);
-
-			strncpy_null(sp.database, ci->database, SM_DATABASE);
-			strncpy_null(sp.user, ci->username, SM_USER);
-
-			SOCK_put_n_char(sock, (char *) &sp, sizeof(StartupPacket));
-			SOCK_flush_output(sock);
-		}
+		if (!protocol3_packet_build(self))
+			goto error_proc;
 
 		if (SOCK_get_errcode(sock) != 0)
 		{
@@ -1735,10 +1620,8 @@ inolog("protocol=%s version=%d,%d\n", ci->protocol, self->pg_version_major, self
 	 * Now get the authentication request from backend
 	 */
 
-	if (!PROTOCOL_62(ci))
 	{
-		BOOL		beforeV2 = PG_VERSION_LT(self, 6.4),
-					ReadyForQuery = FALSE, retry = FALSE;
+		BOOL		ReadyForQuery = FALSE, retry = FALSE;
 		uint32	leng = 0;
 #if defined(USE_GSS) || defined(USE_SSPI) || defined(USE_KRB5)
 		int	authRet;
@@ -1757,17 +1640,13 @@ inolog("protocol=%s version=%d,%d\n", ci->protocol, self->pg_version_major, self
 				mylog("auth got '%c'\n", beresp);
 				if (0 != SOCK_get_errcode(sock))
 					goto sockerr_proc;
-				if (PROTOCOL_74(ci))
+
+				if (beresp != 'E' || startPacketReceived)
 				{
-					if (beresp != 'E' || startPacketReceived)
-					{
-						leng = SOCK_get_response_length(sock);
-						inolog("leng=%d\n", leng);
-						if (0 != SOCK_get_errcode(sock))
-							goto sockerr_proc;
-					}
-					else
-						strncpy_null(ci->protocol, PG74REJECTED, sizeof(ci->protocol));
+					leng = SOCK_get_response_length(sock);
+					inolog("leng=%d\n", leng);
+					if (0 != SOCK_get_errcode(sock))
+						goto sockerr_proc;
 				}
 				startPacketReceived = TRUE;
 			}
@@ -1779,9 +1658,7 @@ inolog("Ekita retry=%d\n", retry);
 					handle_error_message(self, msgbuffer, sizeof(msgbuffer), self->sqlstate, func, NULL);
 					CC_set_error(self, CONN_INVALID_AUTHENTICATION, msgbuffer, func);
 					qlog("ERROR from backend during authentication: '%s'\n", msgbuffer);
-					if (PROTOCOL_74REJECTED(ci))
-						retry = TRUE;
-					else if (0 == strncmp(msgbuffer, "FATAL:", 6))
+					if (0 == strncmp(msgbuffer, "FATAL:", 6))
 					{
 						const char *emsg = msgbuffer + 8;
 						if (0 == strnicmp(emsg, "unsupported frontend protocol", 29))
@@ -1857,8 +1734,7 @@ inolog("Ekita retry=%d\n", retry);
 
 							mylog("past need password\n");
 
-							if (PROTOCOL_74(&(self->connInfo)))
-								SOCK_put_char(sock, 'p');
+							SOCK_put_char(sock, 'p');
 							SOCK_put_int(sock, (Int4) (4 + strlen(SAFE_NAME(ci->password)) + 1), 4);
 							SOCK_put_n_char(sock, SAFE_NAME(ci->password), strlen(SAFE_NAME(ci->password)) + 1);
 							sockerr = SOCK_flush_output(sock);
@@ -1998,12 +1874,6 @@ inolog("Ekita retry=%d\n", retry);
 				anotherVersionRetry = TRUE;
 				goto another_version_retry;
 			}
-
-			/*
-			 * There were no ReadyForQuery responce before 6.4.
-			 */
-			if (beforeV2 && areq == AUTH_REQ_OK)
-				ReadyForQuery = TRUE;
 		} while (!ReadyForQuery);
 	}
 
@@ -2028,37 +1898,6 @@ error_proc:
 	}
 
 	CC_clear_error(self);		/* clear any password error */
-
-	/*
-	 * send an empty query in order to find out whether the specified
-	 * database really exists on the server machine
-	 */
-	if (!PROTOCOL_74(ci))
-	{
-		mylog("sending an empty query...\n");
-
-		res = CC_send_query(self, " ", NULL, 0, NULL);
-		if (res == NULL ||
-		    (QR_get_rstatus(res) != PORES_EMPTY_QUERY &&
-		     QR_command_nonfatal(res)))
-		{
-			CC_set_error(self, CONNECTION_NO_SUCH_DATABASE, "The database does not exist on the server\nor user authentication failed.", func);
-			QR_Destructor(res);
-			return 0;
-		}
-		QR_Destructor(res);
-
-		mylog("empty query seems to be OK.\n");
-
-		/* 
-		 * Get the version number first so we can check it before
-		 * sending options that are now obsolete. DJP 21/06/2002
-		 */
-inolog("CC_lookup_pg_version\n");
-		CC_lookup_pg_version(self);	/* Get PostgreSQL version for
-						   SQLGetInfo use */
-		CC_setenv(self);
-	}
 
 	return 1;
 }	
@@ -2137,64 +1976,44 @@ inolog("CC_send_settings\n");
 	CC_lookup_lo(self);			/* a hack to get the oid of
 						   our large object oid type */
 
-	/*
-	 *	Multibyte handling is available ?
-	 */
-	if (PG_VERSION_GE(self, 6.4))
+	/* Multibyte handling */
+	CC_lookup_characterset(self);
+	if (CC_get_errornumber(self) > 0)
 	{
-		CC_lookup_characterset(self);
-		if (CC_get_errornumber(self) > 0)
-		{
-			ret = 0;
-			goto cleanup;
-		}
-#ifdef UNICODE_SUPPORT
-		if (CC_is_in_unicode_driver(self))
-		{
-			if (!self->original_client_encoding ||
-			    UTF8 != self->ccsc)
-			{
-				QResultClass	*res;
-				if (PG_VERSION_LT(self, 7.1))
-				{
-					CC_set_error(self, CONN_NOT_IMPLEMENTED_ERROR, "UTF-8 conversion isn't implemented before 7.1", func);
-					ret = 0;
-					goto cleanup;
-				}
-				if (self->original_client_encoding)
-					free(self->original_client_encoding);
-				self->original_client_encoding = NULL;
-				if (res = CC_send_query(self, "set client_encoding to 'UTF8'", NULL, 0, NULL), QR_command_maybe_successful(res))
-				{
-					self->original_client_encoding = strdup("UNICODE");
-					self->ccsc = pg_CS_code(self->original_client_encoding);
-				}
-				QR_Destructor(res);
-			}
-		}
-#else
-		{
-		}
-#endif /* UNICODE_SUPPORT */
-	}
-#ifdef UNICODE_SUPPORT
-	else if (CC_is_in_unicode_driver(self))
-	{
-		CC_set_error(self, CONN_NOT_IMPLEMENTED_ERROR, "Unicode isn't supported before 6.4", func);
 		ret = 0;
 		goto cleanup;
 	}
+#ifdef UNICODE_SUPPORT
+	if (CC_is_in_unicode_driver(self))
+	{
+		if (!self->original_client_encoding ||
+			UTF8 != self->ccsc)
+		{
+			QResultClass	*res;
+			if (self->original_client_encoding)
+				free(self->original_client_encoding);
+			self->original_client_encoding = NULL;
+			if (res = CC_send_query(self, "set client_encoding to 'UTF8'", NULL, 0, NULL), QR_command_maybe_successful(res))
+			{
+				self->original_client_encoding = strdup("UNICODE");
+				self->ccsc = pg_CS_code(self->original_client_encoding);
+			}
+			QR_Destructor(res);
+		}
+	}
+#else
+	{
+	}
 #endif /* UNICODE_SUPPORT */
+
 	ci->updatable_cursors = DISALLOW_UPDATABLE_CURSORS; 
-	if (ci->allow_keyset &&
-		PG_VERSION_GE(self, 7.0)) /* Tid scan since 7.0 */
+	if (ci->allow_keyset)
 	{
 		if (ci->drivers.lie || !ci->drivers.use_declarefetch)
 			ci->updatable_cursors |= (ALLOW_STATIC_CURSORS | ALLOW_KEYSET_DRIVEN_CURSORS | ALLOW_BULK_OPERATIONS | SENSE_SELF_OPERATIONS);
 		else
 		{
-			if (PG_VERSION_GE(self, 7.4)) /* HOLDABLE CURSORS since 7.4 */
-				ci->updatable_cursors |= (ALLOW_STATIC_CURSORS | SENSE_SELF_OPERATIONS);
+			ci->updatable_cursors |= (ALLOW_STATIC_CURSORS | SENSE_SELF_OPERATIONS);
 		}
 	}
 
@@ -2688,11 +2507,9 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 	size_t	qrylen;
 	int			id;
 	SocketClass *sock = self->sock;
-	int			maxlen,
-				empty_reqs;
+	int			empty_reqs;
 	BOOL		ReadyToReturn = FALSE,
 				query_completed = FALSE,
-				beforeV2 = PG_VERSION_LT(self, 6.4),
 				aborted = FALSE,
 				used_passed_result_object = FALSE,
 			discard_next_begin = FALSE,
@@ -2701,7 +2518,6 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 			consider_rollback;
 	Int4		response_length;
 	UInt4		leng;
-	ConnInfo	*ci = &(self->connInfo);
 	int		func_cs_count = 0;
 
 	/* ERROR_MSG_LENGTH is suffcient */
@@ -2741,14 +2557,7 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 		}
 	}
 	/* Indicate that we are sending a query to the backend */
-	maxlen = CC_get_max_query_len(self);
 	qrylen = strlen(query);
-	if (maxlen > 0 && maxlen < (int) qrylen + 1)
-	{
-		CC_set_error(self, CONNECTION_MSG_TOO_LONG, "Query string is too long", func);
-		CLEANUP_FUNC_CONN_CS(func_cs_count, self);
-		return NULL;
-	}
 
 	if ((NULL == query) || (query[0] == '\0'))
 	{
@@ -2827,22 +2636,20 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 		lenrlscmd = strlen(rlscmd);
 		lenperqsvp = strlen(per_query_svp);
 	}
-	if (PROTOCOL_74(ci))
+	leng = (UInt4) qrylen;
+	if (appendq)
+		leng += (UInt4) (strlen(appendq) + 1);
+	if (issue_begin)
+		leng += (UInt4) (lenbgncmd + 1);
+	if (query_rollback)
 	{
-		leng = (UInt4) qrylen;
-		if (appendq)
-			leng += (UInt4) (strlen(appendq) + 1);
-		if (issue_begin)
-			leng += (UInt4) (lenbgncmd + 1);
-		if (query_rollback)
-		{
-			leng += (UInt4) (lensvpcmd + 1 + lenperqsvp + 1);
-			leng += (UInt4) (1 + lenrlscmd + 1 + lenperqsvp);
-		}
-		leng++;
-		SOCK_put_int(sock, leng + 4, 4);
-inolog("leng=%d\n", leng);
+		leng += (UInt4) (lensvpcmd + 1 + lenperqsvp + 1);
+		leng += (UInt4) (1 + lenrlscmd + 1 + lenperqsvp);
 	}
+	leng++;
+	SOCK_put_int(sock, leng + 4, 4);
+inolog("leng=%d\n", leng);
+
 	if (issue_begin)
 	{
 		SOCK_put_n_char(sock, bgncmd, lenbgncmd);
@@ -2969,10 +2776,7 @@ inolog("Discarded the first SAVEPOINT\n");
 					else if (strnicmp(cmdbuffer, rbkcmd, lenrbkcmd) == 0)
 					{
 						CC_mark_cursors_doubtful(self);
-						if (PROTOCOL_74(&(self->connInfo)))
-							CC_set_in_error_trans(self); /* mark the transaction error in case of manual rollback */
-						else
-							CC_on_abort(self, NO_TRANS);
+						CC_set_in_error_trans(self); /* mark the transaction error in case of manual rollback */
 					}
 					/*
 					 *	DROP TABLE or ALTER TABLE may change
@@ -2989,23 +2793,11 @@ inolog("Discarded the first SAVEPOINT\n");
 							res->recent_processed_row_count = atoi(ptr + 1);
 						else
 							res->recent_processed_row_count = -1;
-						if (PROTOCOL_74(&(self->connInfo)))
+						if (NULL != self->current_schema &&
+							strnicmp(cmdbuffer, "SET", 3) == 0)
 						{
-							if (NULL != self->current_schema &&
-							    strnicmp(cmdbuffer, "SET", 3) == 0)
-							{
-								if (is_setting_search_path(query))
-									reset_current_schema(self);
-							}
-						}
-						else
-						{
-							if (strnicmp(cmdbuffer, cmtcmd, 6) == 0)
-								CC_on_commit(self);
-							else if (strnicmp(cmdbuffer, "END", 3) == 0)
-								CC_on_commit(self);
-							else if (strnicmp(cmdbuffer, "ABORT", 5) == 0)
-								CC_on_abort(self, NO_TRANS);
+							if (is_setting_search_path(query))
+								reset_current_schema(self);
 						}
 					}
 
@@ -3014,23 +2806,6 @@ inolog("Discarded the first SAVEPOINT\n");
 					QR_set_command(res, cmdbuffer);
 					query_completed = TRUE;
 					mylog("send_query: returning res = %p\n", res);
-					if (!beforeV2)
-						break;
-
-					/*
-					 * (Quotation from the original comments) since
-					 * backend may produce more than one result for some
-					 * commands we need to poll until clear so we send an
-					 * empty query, and keep reading out of the pipe until
-					 * an 'I' is received
-					 */
-
-					if (empty_reqs == 0)
-					{
-						SOCK_put_string(sock, "Q ");
-						SOCK_flush_output(sock);
-						empty_reqs++;
-					}
 				}
 				break;
 			case 'Z':			/* Backend is ready for new query (6.4) */
@@ -3051,7 +2826,7 @@ inolog("Discarded the first SAVEPOINT\n");
 
 			case 'I':			/* The server sends an empty query */
 				/* There is a closing '\0' following the 'I', so we eat it */
-				if (PROTOCOL_74(ci) && 0 == response_length)
+				if (0 == response_length)
 					swallow = '\0';
 				else
 					swallow = SOCK_get_char(sock);
@@ -3074,7 +2849,7 @@ inolog("Discarded the first SAVEPOINT\n");
 					if (--empty_reqs == 0)
 						query_completed = TRUE;
 				}
-				else if (!beforeV2)
+				else
 					query_completed = TRUE;
 				break;
 			case 'E':
@@ -3261,14 +3036,6 @@ mylog("!!! copydata len=%d\n", response_length);
 			break;
 		if (CONN_DOWN == self->status)
 			break;
-		/*
-		 * There was no ReadyForQuery response before 6.4.
-		 */
-		if (beforeV2)
-		{
-			if (empty_reqs == 0 && query_completed)
-				break;
-		}
 	}
 
 cleanup:
@@ -3379,9 +3146,8 @@ CC_send_function(ConnectionClass *self, int fnid, void *result_buf, int *actual_
 	int			ret = TRUE;
 	UInt4			leng;
 	Int4			response_length;
-	ConnInfo		*ci;
 	int			func_cs_count = 0;
-	BOOL			sinceV3, beforeV3, beforeV2, resultResponse;
+	BOOL			resultResponse;
 
 	mylog("send_function(): conn=%p, fnid=%d, result_is_int=%d, nargs=%d\n", self, fnid, result_is_int, nargs);
 
@@ -3410,32 +3176,24 @@ CC_send_function(ConnectionClass *self, int fnid, void *result_buf, int *actual_
 	}
 #define	return DONT_CALL_RETURN_FROM_HERE???
 	ENTER_INNER_CONN_CS(self, func_cs_count);
-	ci = &(self->connInfo);
-	sinceV3 = PROTOCOL_74(ci);
-	beforeV3 = (!sinceV3);
-	beforeV2 = (beforeV3 && !PROTOCOL_64(ci));
-	if (sinceV3)
-	{
-		leng = 4 + sizeof(uint32) + 2 + 2
-			+ sizeof(uint16);
+
+	leng = 4 + sizeof(uint32) + 2 + 2
+		+ sizeof(uint16);
  
-		for (i = 0; i < nargs; i++)
+	for (i = 0; i < nargs; i++)
+	{
+		leng += 4;
+		if (args[i].len >= 0)
 		{
-			leng += 4;
-			if (args[i].len >= 0)
-			{
-				if (args[i].isint)
-					leng += 4;
-				else
-					leng += args[i].len;
-			}
+			if (args[i].isint)
+				leng += 4;
+			else
+				leng += args[i].len;
 		}
-		leng += 2;
-		SOCK_put_char(sock, 'F');
-		SOCK_put_int(sock, leng, 4);
 	}
-	else
-		SOCK_put_string(sock, "F ");
+	leng += 2;
+	SOCK_put_char(sock, 'F');
+	SOCK_put_int(sock, leng, 4);
 	if (SOCK_get_errcode(sock) != 0)
 	{
 		CC_set_error(self, CONNECTION_COULD_NOT_SEND, "Could not send function to backend", func);
@@ -3445,14 +3203,9 @@ CC_send_function(ConnectionClass *self, int fnid, void *result_buf, int *actual_
 	}
 
 	SOCK_put_int(sock, fnid, 4);
-	if (sinceV3)
-	{
-		SOCK_put_int(sock, 1, 2); /* # of formats */
-		SOCK_put_int(sock, 1, 2); /* the format is binary */
-		SOCK_put_int(sock, nargs, 2);
-	}
-	else
-		SOCK_put_int(sock, nargs, 4);
+	SOCK_put_int(sock, 1, 2); /* # of formats */
+	SOCK_put_int(sock, 1, 2); /* the format is binary */
+	SOCK_put_int(sock, nargs, 2);
 
 	mylog("send_function: done sending function\n");
 
@@ -3468,8 +3221,7 @@ CC_send_function(ConnectionClass *self, int fnid, void *result_buf, int *actual_
 
 	}
 
-	if (sinceV3)
-		SOCK_put_int(sock, 1, 2); /* result format is binary */
+	SOCK_put_int(sock, 1, 2); /* result format is binary */
 	mylog("    done sending args\n");
 
 	SOCK_flush_output(sock);
@@ -3494,14 +3246,6 @@ inolog("send_func response_length=%d\n", response_length);
 					break;
 				} /* fall through */
 			case 'V':
-				if ('V' == id)
-				{
-					if (beforeV3) /* FunctionResultResponse */
-					{
-						resultResponse = TRUE;
-						break;
-					}
-				}
 				*actual_result_len = SOCK_get_int(sock, 4);
 				if (-1 != *actual_result_len)
 				{
@@ -3511,14 +3255,6 @@ inolog("send_func response_length=%d\n", response_length);
 						SOCK_get_n_char(sock, (char *) result_buf, *actual_result_len);
 
 					mylog("  after get result\n");
-				}
-				if (beforeV3)
-				{
-					SOCK_get_char(sock); /* get the last '0' */
-					if (beforeV2)
-						done = TRUE;
-					resultResponse = FALSE;
-					mylog("   after get 0\n");
 				}
 				break;			/* ok */
 
@@ -3536,8 +3272,6 @@ inolog("send_func response_length=%d\n", response_length);
 
 				mylog("send_function(V): 'E' - %s\n", CC_get_errormsg(self));
 				qlog("ERROR from backend during send_function: '%s'\n", CC_get_errormsg(self));
-				if (beforeV2)
-					done = TRUE;
 				ret = FALSE;
 				break;
 
@@ -3549,8 +3283,6 @@ inolog("send_func response_length=%d\n", response_length);
 			case '0':	/* empty result */
 				if (resultResponse)
 				{
-					if (beforeV2)
-						done = TRUE;
 					resultResponse = FALSE;
 					break;
 				} /* fall through */
@@ -3619,27 +3351,12 @@ CC_setenv(ConnectionClass *self)
 
 	}
 
-	/* KSQO (not applicable to 7.1+ - DJP 21/06/2002) */
-	if (ci->drivers.ksqo && PG_VERSION_LT(self, 7.1))
-	{
-		result = PGAPI_ExecDirect(hstmt, "set ksqo to 'ON'", SQL_NTS, 0);
-		if (!SQL_SUCCEEDED(result))
-			status = FALSE;
+	/* extra_float_digits */
+	result = PGAPI_ExecDirect(hstmt, "set extra_float_digits to 2", SQL_NTS, 0);
+	if (!SQL_SUCCEEDED(result))
+		status = FALSE;
 
-		mylog("%s: result %d, status %d from set ksqo\n", func, result, status);
-
-	}
-
-	/* extra_float_digits (applicable since 7.4) */
-	if (PG_VERSION_GT(self, 7.3))
-	{
-		result = PGAPI_ExecDirect(hstmt, "set extra_float_digits to 2", SQL_NTS, 0);
-		if (!SQL_SUCCEEDED(result))
-			status = FALSE;
-
-		mylog("%s: result %d, status %d from set extra_float_digits\n", func, result, status);
-
-	}
+	mylog("%s: result %d, status %d from set extra_float_digits\n", func, result, status);
 
 	PGAPI_FreeStmt(hstmt, SQL_DROP);
 
@@ -3753,12 +3470,8 @@ CC_lookup_lo(ConnectionClass *self)
 
 	mylog("%s: entering...\n", func);
 
-	if (PG_VERSION_GE(self, 7.4))
-		res = CC_send_query(self, "select oid, typbasetype from pg_type where typname = '"  PG_TYPE_LO_NAME "'", 
-			NULL, IGNORE_ABORT_ON_CONN | ROLLBACK_ON_ERROR, NULL);
-	else
-		res = CC_send_query(self, "select oid, 0 from pg_type where typname='" PG_TYPE_LO_NAME "'",
-			NULL, IGNORE_ABORT_ON_CONN | ROLLBACK_ON_ERROR, NULL);
+	res = CC_send_query(self, "select oid, typbasetype from pg_type where typname = '"  PG_TYPE_LO_NAME "'", 
+						NULL, IGNORE_ABORT_ON_CONN | ROLLBACK_ON_ERROR, NULL);
 	if (QR_command_maybe_successful(res) && QR_get_num_cached_tuples(res) > 0)
 	{
 		OID	basetype;
@@ -3785,104 +3498,11 @@ CC_lookup_lo(ConnectionClass *self)
 void
 CC_initialize_pg_version(ConnectionClass *self)
 {
-	strcpy(self->pg_version, self->connInfo.protocol);
-	if (PROTOCOL_62(&self->connInfo))
-	{
-		self->pg_version_number = (float) 6.2;
-		self->pg_version_major = 6;
-		self->pg_version_minor = 2;
-	}
-	else if (PROTOCOL_63(&self->connInfo))
-	{
-		self->pg_version_number = (float) 6.3;
-		self->pg_version_major = 6;
-		self->pg_version_minor = 3;
-	}
-	else if (PROTOCOL_64(&self->connInfo))
-	{
-		self->pg_version_number = (float) 6.4;
-		self->pg_version_major = 6;
-		self->pg_version_minor = 4;
-	}
-	else
-	{
-		self->pg_version_number = (float) 7.4;
-		self->pg_version_major = 7;
-		self->pg_version_minor = 4;
-	}
+	strcpy(self->pg_version, "7.4");
+	self->pg_version_number = (float) 7.4;
+	self->pg_version_major = 7;
+	self->pg_version_minor = 4;
 }
-
-
-/*
- *	This function gets the version of PostgreSQL that we're connected to.
- *	This is used to return the correct info in SQLGetInfo
- *	DJP - 25-1-2001
- */
-static void
-CC_lookup_pg_version(ConnectionClass *self)
-{
-	HSTMT		hstmt;
-	RETCODE		result;
-	char		szVersion[32];
-	int			major,
-				minor;
-	CSTR		func = "CC_lookup_pg_version";
-
-	mylog("%s: entering...\n", func);
-
-/*
- *	This function must use the local odbc API functions since the odbc state
- *	has not transitioned to "connected" yet.
- */
-	result = PGAPI_AllocStmt(self, &hstmt, 0);
-	if (!SQL_SUCCEEDED(result))
-		return;
-
-	/* get the server's version if possible	 */
-	result = PGAPI_ExecDirect(hstmt, "select version()", SQL_NTS, 0);
-	if (!SQL_SUCCEEDED(result))
-	{
-		PGAPI_FreeStmt(hstmt, SQL_DROP);
-		return;
-	}
-
-	result = PGAPI_Fetch(hstmt);
-	if (!SQL_SUCCEEDED(result))
-	{
-		PGAPI_FreeStmt(hstmt, SQL_DROP);
-		return;
-	}
-
-	result = PGAPI_GetData(hstmt, 1, SQL_C_CHAR, self->pg_version, MAX_INFO_STRING, NULL);
-	if (!SQL_SUCCEEDED(result))
-	{
-		PGAPI_FreeStmt(hstmt, SQL_DROP);
-		return;
-	}
-
-	/*
-	 * Extract the Major and Minor numbers from the string. This assumes
-	 * the string starts 'Postgresql X.X'
-	 */
-	strcpy(szVersion, "0.0");
-	if (sscanf(self->pg_version, "%*s %d.%d", &major, &minor) >= 2)
-	{
-		snprintf(szVersion, sizeof(szVersion), "%d.%d", major, minor);
-		self->pg_version_major = major;
-		self->pg_version_minor = minor;
-	}
-	self->pg_version_number = (float) atof(szVersion);
-	if (PG_VERSION_GE(self, 7.3))
-		self->schema_support = 1;
-
-	mylog("Got the PostgreSQL version string: '%s'\n", self->pg_version);
-	mylog("Extracted PostgreSQL version number: '%1.1f'\n", self->pg_version_number);
-	qlog("    [ PostgreSQL version string = '%s' ]\n", self->pg_version);
-	qlog("    [ PostgreSQL version number = '%1.1f' ]\n", self->pg_version_number);
-
-	result = PGAPI_FreeStmt(hstmt, SQL_DROP);
-}
-
 
 void
 CC_log_error(const char *func, const char *desc, const ConnectionClass *self)
@@ -3904,7 +3524,7 @@ CC_log_error(const char *func, const char *desc, const ConnectionClass *self)
 		{
 			SocketClass *sock = self->sock;
 
-			qlog("            socket=%d, reverse=%d, errornumber=%d, errormsg='%s'\n", sock->socket, sock->reverse, sock->errornumber, nullcheck(SOCK_get_errmsg(sock)));
+			qlog("            socket=%d, errornumber=%d, errormsg='%s'\n", sock->socket, sock->errornumber, nullcheck(SOCK_get_errmsg(sock)));
 			qlog("            buffer_in=%u, buffer_out=%u\n", sock->buffer_in, sock->buffer_out);
 			qlog("            buffer_filled_in=%d, buffer_filled_out=%d, buffer_read_in=%d\n", sock->buffer_filled_in, sock->buffer_filled_out, sock->buffer_read_in);
 		}
@@ -3917,23 +3537,6 @@ CC_log_error(const char *func, const char *desc, const ConnectionClass *self)
 #undef PRN_NULLCHECK
 }
 
-int
-CC_get_max_query_len(const ConnectionClass *conn)
-{
-	int			value;
-
-	/* Long Queries in 7.0+ */
-	if (PG_VERSION_GE(conn, 7.0))
-		value = 0 /* MAX_STATEMENT_LEN */ ;
-	/* Prior to 7.0 we used 2*BLCKSZ */
-	else if (PG_VERSION_GE(conn, 6.5))
-		value = (2 * BLCKSZ);
-	else
-		/* Prior to 6.5 we used BLCKSZ */
-		value = BLCKSZ;
-	return value;
-}
-
 /*
  *	This doesn't really return the CURRENT SCHEMA
  *	but there's no alternative.
@@ -3941,7 +3544,7 @@ CC_get_max_query_len(const ConnectionClass *conn)
 const char *
 CC_get_current_schema(ConnectionClass *conn)
 {
-	if (!conn->current_schema && conn->schema_support)
+	if (!conn->current_schema)
 	{
 		QResultClass	*res;
 
@@ -4161,23 +3764,18 @@ inolog("socket=%d\n", socket);
 	sock->ssl = PQgetssl(pqconn);
 inolog("ssl=%p\n", sock->ssl);
 #endif /* USE_SSL */
-if (TRUE)
 	{
 		int	pversion;
-		ConnInfo	*ci = &self->connInfo;
 
-		sock->pversion = PG_PROTOCOL_74;
-		strncpy_null(ci->protocol, PG74, sizeof(ci->protocol));
+		sock->pversion = PG_PROTOCOL_LATEST;
 		pversion = PQprotocolVersion(pqconn);
-		switch (pversion)
+		if (pversion < 3)
 		{
-			case 2:
-				sock->pversion = PG_PROTOCOL_64;
-				strncpy_null(ci->protocol, PG64, sizeof(ci->protocol));
-				break;
+			mylog("Protocol version %d is not supported\n", pversion);
+			goto cleanup1;
 		}
+		mylog("protocol=%d\n", pversion);
 	}
-	mylog("protocol=%s\n", self->connInfo.protocol);
 	{
 		int pversion;
 		const char *conforming_strings;
@@ -4187,8 +3785,6 @@ if (TRUE)
 		self->pg_version_minor = (pversion % 10000) / 100;
 		sprintf(self->pg_version, "%d.%d.%d",  self->pg_version_major, self->pg_version_minor, pversion % 100);
 		self->pg_version_number = (float) atof(self->pg_version);
-		if (PG_VERSION_GE(self, 7.3))
-			self->schema_support = 1;
 		if (conforming_strings = PQparameterStatus(pqconn, std_cnf_strs), NULL != conforming_strings)
 		{
 			if (stricmp(conforming_strings, "on") == 0)
@@ -4258,10 +3854,7 @@ const char *CurrCat(const ConnectionClass *conn)
 	 */
 	if (isMsQuery())	/* MS Query */
 		return NULL;
-	else if (conn->schema_support)
-		return conn->connInfo.database;
-	else
-		return NULL;
+	return conn->connInfo.database;
 }
 
 const char *CurrCatString(const ConnectionClass *conn)
@@ -4591,7 +4184,6 @@ PgDtc_isolate(void *self, DWORD option)
 	newconn->pg_version_minor = sconn->pg_version_minor;
 	newconn->ms_jet = sconn->ms_jet;
 	newconn->unicode = sconn->unicode;
-	newconn->schema_support = sconn->schema_support;
 	newconn->lo_is_domain = sconn->lo_is_domain;
 	newconn->escape_in_literal = sconn->escape_in_literal;
 	newconn->original_client_encoding = sconn->original_client_encoding;

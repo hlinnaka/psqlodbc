@@ -381,14 +381,6 @@ BOOL isSqlServr();
 /* Now that's 0, lets use this instead. DJP 24-1-2001 */
 #define STD_STATEMENT_LEN			MAX_MESSAGE_LEN
 
-#define PG62						"6.2"		/* "Protocol" key setting
-												 * to force Postgres 6.2 */
-#define PG63						"6.3"		/* "Protocol" key setting
-												 * to force postgres 6.3 */
-#define PG64						"6.4"
-#define PG74REJECTED					"reject7.4"
-#define PG74						"7.4"
-
 typedef int	(*PQFUNC)();
 
 typedef struct ConnectionClass_ ConnectionClass;
@@ -491,7 +483,6 @@ typedef struct GlobalValues_
 	char		debug;
 	char		commlog;
 	char		disable_optimizer;
-	char		ksqo;
 	char		unique_index;
 	char		onlyread;		/* readonly is reserved on Digital C++
 								 * compiler */

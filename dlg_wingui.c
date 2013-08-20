@@ -533,19 +533,6 @@ ds_options2Proc(HWND hdlg,
 
 			/* Protocol */
 			enable = (ci->sslmode[0] == SSLLBYTE_DISABLE || ci->username[0] == '\0');
-			EnableWindow(GetDlgItem(hdlg, DS_PG62), enable);
-			EnableWindow(GetDlgItem(hdlg, DS_PG63), enable);
-			EnableWindow(GetDlgItem(hdlg, DS_PG64), enable);
-			EnableWindow(GetDlgItem(hdlg, DS_PG74), enable);
-			if (PROTOCOL_62(ci))
-				CheckDlgButton(hdlg, DS_PG62, 1);
-			else if (PROTOCOL_63(ci))
-				CheckDlgButton(hdlg, DS_PG63, 1);
-			else if (PROTOCOL_64(ci))
-				CheckDlgButton(hdlg, DS_PG64, 1);
-			else
-				/* latest */
-				CheckDlgButton(hdlg, DS_PG74, 1);
 
 			/* How to issue Rollback */
 			switch (ci->rollback_on_error)
@@ -623,17 +610,6 @@ ds_options2Proc(HWND hdlg,
 
 					/* Readonly */
 					sprintf(ci->onlyread, "%d", IsDlgButtonChecked(hdlg, DS_READONLY));
-
-					/* Protocol */
-					if (IsDlgButtonChecked(hdlg, DS_PG62))
-						strcpy(ci->protocol, PG62);
-					else if (IsDlgButtonChecked(hdlg, DS_PG63))
-						strcpy(ci->protocol, PG63);
-					else if (IsDlgButtonChecked(hdlg, DS_PG64))
-						strcpy(ci->protocol, PG64);
-					else
-						/* latest */
-						strcpy(ci->protocol, PG74);
 
 					/* Issue rollback command on error */
 					if (IsDlgButtonChecked(hdlg, DS_NO_ROLLBACK))

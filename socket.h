@@ -177,9 +177,6 @@ struct SocketClass_
 	gss_ctx_id_t	gctx;		/* GSS context */
 	gss_name_t	gtarg_nam;	/* GSS target name */
 #endif /* USE_GSS */
-
-	char		reverse;	/* used to handle Postgres 6.2 protocol
-						* (reverse byte order) */
 };
 
 #define SOCK_get_char(self)	(SOCK_get_next_byte(self, FALSE))

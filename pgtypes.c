@@ -286,10 +286,7 @@ getCharColumnSizeX(const ConnectionClass *conn, OID type, int atttypmod, int adt
 
 	if (maxsize == TEXT_FIELD_SIZE + 1) /* magic length for testing */
 	{
-		if (PG_VERSION_GE(conn, 7.1))
-			maxsize = 0;
-		else
-			maxsize = TEXT_FIELD_SIZE;
+		maxsize = 0;
 	}
 	/*
 	 * Static ColumnSize (i.e., the Maximum ColumnSize of the datatype) This
@@ -420,9 +417,6 @@ static SQLSMALLINT
 getTimestampDecimalDigitsX(const ConnectionClass *conn, OID type, int atttypmod)
 {
 	mylog("%s: type=%d, atttypmod=%d\n", __FUNCTION__, type, atttypmod);
-
-	if (PG_VERSION_LT(conn, 7.2))
-		return 0;
 
 	return (atttypmod > -1 ? atttypmod : 6);
 }
@@ -868,12 +862,7 @@ inolog("pgtype_to_name int4\n");
 		case PG_TYPE_ABSTIME:
 			return "abstime";
 		case PG_TYPE_DATETIME:
-			if (PG_VERSION_GT(conn, 7.1))
-				return "timestamptz";
-			else if (PG_VERSION_LT(conn, 7.0))
-				return "datetime";
-			else
-				return "timestamp";
+			return "timestamptz";
 		case PG_TYPE_TIMESTAMP_NO_TMZONE:
 			return "timestamp without time zone";
 		case PG_TYPE_TIMESTAMP:
@@ -958,12 +947,7 @@ pgtype_attr_column_size(const ConnectionClass *conn, OID type, int atttypmod, in
 					value = NAME_FIELD_SIZE;
 #endif /* NAME_FIELD_SIZE */
 				if (0 == value)
-				{
-					if (PG_VERSION_GE(conn, 7.3))
-						value = NAMEDATALEN_V73;
-					else
-						value = NAMEDATALEN_V72;
-				}
+					value = NAMEDATALEN_V73;
 				return value;
 			}
 
@@ -1166,9 +1150,7 @@ pgtype_attr_buffer_length(const ConnectionClass *conn, OID type, int atttypmod, 
 			if (CC_is_in_unicode_driver(conn))
 				return prec * WCLEN;
 #endif /* UNICODE_SUPPORT */
-			/* after 7.2 */
-			if (PG_VERSION_GE(conn, 7.2))
-				coef = conn->mb_maxbyte_per_char;
+			coef = conn->mb_maxbyte_per_char;
 			if (coef < 2 && (conn->connInfo).lf_conversion)
 				/* CR -> CR/LF */
 				coef = 2;
@@ -1302,9 +1284,7 @@ pgtype_attr_transfer_octet_length(const ConnectionClass *conn, OID type, int att
 			if (CC_is_in_unicode_driver(conn))
 				return column_size * WCLEN;
 #endif /* UNICODE_SUPPORT */
-			/* after 7.2 */
-			if (PG_VERSION_GE(conn, 7.2))
-				coef = conn->mb_maxbyte_per_char;
+			coef = conn->mb_maxbyte_per_char;
 			if (coef < 2 && (conn->connInfo).lf_conversion)
 				/* CR -> CR/LF */
 				coef = 2;
@@ -1689,12 +1669,7 @@ getCharColumnSize(const StatementClass *stmt, OID type, int col, int handle_unkn
 #endif /* UNICODE_SUPPORT */
 
 	if (maxsize == TEXT_FIELD_SIZE + 1) /* magic length for testing */
-	{
-		if (PG_VERSION_GE(conn, 7.1))
-			maxsize = 0;
-		else
-			maxsize = TEXT_FIELD_SIZE;
-	}
+		maxsize = 0;
 	/*
 	 * Static ColumnSize (i.e., the Maximum ColumnSize of the datatype) This
 	 * has nothing to do with a result set.
@@ -1779,8 +1754,6 @@ getTimestampDecimalDigits(const StatementClass *stmt, OID type, int col)
 	mylog("getTimestampDecimalDigits: type=%d, col=%d\n", type, col);
 
 	if (col < 0)
-		return 0;
-	if (PG_VERSION_LT(conn, 7.2))
 		return 0;
 
 	result = SC_get_Curres(stmt);
@@ -1909,9 +1882,7 @@ pgtype_transfer_octet_length(const StatementClass *stmt, OID type, int column_si
 			if (CC_is_in_unicode_driver(conn))
 				return column_size * WCLEN;
 #endif /* UNICODE_SUPPORT */
-			/* after 7.2 */
-			if (PG_VERSION_GE(conn, 7.2))
-				coef = conn->mb_maxbyte_per_char;
+			coef = conn->mb_maxbyte_per_char;
 			if (coef < 2 && (conn->connInfo).lf_conversion)
 				/* CR -> CR/LF */
 				coef = 2;
