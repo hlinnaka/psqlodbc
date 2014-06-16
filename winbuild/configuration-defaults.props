@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This file contains default configuration options for the build.
+  To override, create a "configuration-local.props" file. You can copy
+  this file as a template.
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+
+    <!-- Use libpq to establish connection. If enabled, PostgreSQL client
+         and OpenSSL must be installed, and PG_INC/PG_LIB and SSL_INC/SSL_LIB
+         properties must be set. -->
+    <USE_LIBPQ>true</USE_LIBPQ>
+
+    <!-- Support SSPI authentication -->    
+    <USE_SSPI>true</USE_SSPI>
+    <!-- Support two-phase commit with MSDTC -->
+    <MSDTC>true</MSDTC>
+
+    <!-- Support gssapi authentication. If enabled, libgss must be installed
+         and GSS_INC/GSS_LIB properties must be set. -->
+    <USE_GSS>false</USE_GSS>
+
+    <!-- Print a memory leak report at program exit. Off by default, and
+         ignored on Release builds. -->
+    <MEMORY_DEBUG>false</MEMORY_DEBUG>
+
+  </PropertyGroup>
+
+  <!-- Paths to external dependencies. These defaults are the default install
+       locations of the libraries, using the most recent stable versions.
+    -->
+  <PropertyGroup Condition="'$(Platform)'=='Win32'">
+
+    <!-- Location of PostgreSQL header files and libpq.lib -->
+    <PG_INC>C:\Program Files (x86)\PostgreSQL\9.3\include</PG_INC>
+    <PG_LIB>C:\Program Files (x86)\PostgreSQL\9.3\lib</PG_LIB>
+    <!-- Location of PostgreSQL libpq binaries. Not used when compiling, but
+         the libpq.dll and SSL DLLs are copied into the installer from this
+         directory -->
+    <PG_BIN>C:\Program Files (x86)\PostgreSQL\9.3\bin</PG_BIN>
+
+    <!-- Location of OpenSSL headers and lib -->
+    <SSL_INC>C:\OpenSSL-Win32\include</SSL_INC>
+    <SSL_LIB>C:\OpenSSL-Win32\lib</SSL_LIB>
+
+    <GSS_INC></GSS_INC>
+    <GSS_LIB></GSS_LIB>
+
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Platform)'=='x64'">
+    <PG_INC>C:\Program Files\PostgreSQL\9.3\include</PG_INC>
+    <PG_LIB>C:\Program Files\PostgreSQL\9.3\lib</PG_LIB>
+    <PG_BIN>C:\Program Files\PostgreSQL\9.3\bin</PG_BIN>
+    <SSL_INC>C:\OpenSSL-Win64\include</SSL_INC>
+    <SSL_LIB>C:\OpenSSL-Win64\lib</SSL_LIB>
+
+    <GSS_INC></GSS_INC>
+    <GSS_LIB></GSS_LIB>
+
+  </PropertyGroup>
+</Project>

@@ -32,7 +32,9 @@
   <?define ALLUSERS = "1" ?>
 <?endif?>
 
+<?ifndef var.MERGEM ?>
 <?define MERGEM = "$(var.Platform)\psqlodbc_$(var.Platform).msm" ?>
+<?endif?>
 
 <!-- Product details -->
 

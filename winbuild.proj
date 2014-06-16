@@ -1,0 +1,83 @@
+<!--
+    This is the top-level MSBuild project file for building the driver on 
+    Windows. It calls into the sub-project files in the winbuild directory to
+    build the driver DLLs, the files in installer directory to build the
+    installer.
+
+Targets:
+
+  BuildDriverBoth - Build ANSI and Unicode drives, in a single Configuration
+                    and Platform. This is the default target.
+  BuildDriver     - Builds the ANSI or Unicode driver, in a single
+                    Configuration and Platform.
+  BuildInstaller  - Build the installer for a single Configuratation and
+                    Platform
+
+  BuildAll        - Build both x86 and x64 installers, in current
+                    Debug/release Configuration.
+
+  Clean           - Remove all output directories
+  installcheck    - Run regression tests.
+
+  -->
+<Project DefaultTargets="BuildDriverBoth" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+    <!-- Build drivers and installer, both 32-bit and 64-bit versions. -->
+    <Target Name="BuildAll">
+        <MSBuild Projects="winbuild.proj" Targets="BuildInstaller"
+	  Properties="TARGET_CPU=x86"/>
+        <MSBuild Projects="winbuild.proj" Targets="BuildInstaller"
+	  Properties="TARGET_CPU=x64"/>
+    </Target>
+
+    <!-- Build the driver DLLs, with current combination of ANSI/Unicode,
+         32-bit/64-bit and Debug/Release configuration. -->
+    <Target Name="BuildDriver">
+        <!-- pgenlist.dll and psqlodbc.dll both depend on each other, so
+             building one before the other will fail, in either order.
+             To work around that, first build just the import libraries.
+          -->
+        <MSBuild Projects="winbuild\psqlodbc.vcxproj;winbuild\pgenlist.vcxproj"
+	  Targets="BuildImportLib" />
+
+        <MSBuild Projects="winbuild\psqlodbc.vcxproj;winbuild\pgenlist.vcxproj;winbuild\pgxalib.vcxproj"
+	  Targets="Build"/>
+    </Target>
+
+    <!-- Build ANSI and Unicode drivers, in current 32-bit/64-bit and
+         Debug/Release configuration -->
+    <ItemGroup>
+      <BothDrivers Include="winbuild.proj">
+        <AdditionalProperties>ANSI_VERSION=false</AdditionalProperties>
+      </BothDrivers>
+      <BothDrivers Include="winbuild.proj">
+        <AdditionalProperties>ANSI_VERSION=true</AdditionalProperties>
+      </BothDrivers>
+    </ItemGroup>
+    <Target Name="BuildDriverBoth">
+        <MSBuild Projects="winbuild.proj" Targets="BuildDriver"
+                 Properties="ANSI_VERSION=false" />
+        <MSBuild Projects="winbuild.proj" Targets="BuildDriver"
+                 Properties="ANSI_VERSION=true" />
+    </Target>
+
+    <!-- Build installer, in current 32-bit/64-bit and Debug/Release
+         configuration -->
+    <Target Name="BuildInstaller" DependsOnTargets="BuildDriverBoth">
+        <MSBuild Projects="installer\installer.proj" Targets="Build" />
+    </Target>
+
+    <!-- Remove all output directories -->
+    <Target Name="Clean">
+        <!-- Installer output directories -->
+        <RemoveDir Directories="x86_Debug;x86_Release" />
+        <!-- Driver output directories -->
+        <RemoveDir Directories="x86_ANSI_Debug;x86_ANSI_Release" />
+        <RemoveDir Directories="x86_Unicode_Debug;x86_Unicode_Release" />
+	<!-- same for x64 -->
+        <RemoveDir Directories="x64_Debug;x64_Release" />
+        <RemoveDir Directories="x64_ANSI_Debug;x64_ANSI_Release" />
+        <RemoveDir Directories="x64_Unicode_Debug;x64_Unicode_Release" />
+    </Target>
+
+</Project>

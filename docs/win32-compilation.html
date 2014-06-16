@@ -10,8 +10,8 @@
 <h1>Compiling psqlODBC on Windows</h1>
 
 <p>
-This page describes how to build the PostgreSQL ODBC Driver on Windows. There
-are three methods to build: from command line using nmake makefiles, from
+This page describes how to build the PostgreSQL ODBC Driver on Windows.  There
+are two methods to build: from command line using nmake makefiles, from
 command line using MSBuild files, and from Visual Studio IDE.
 </p>
 
@@ -38,155 +38,38 @@ The following 3rd party software are required for the build:
 </ul>
 </p>
 
-<p>
-For the MSBuild method, you will also need PowerShell.
-</p>
-
 </p>
 It's also possible to build without libpq and OpenSSL, but some authentication
 methods will be disabled.
 </p>
 
-<h2>Building with nmake.exe</h2>
-
-Use NMAKE.exe to build the driver for the currently active target:<br><br>
-
-    <code>C:\psqlodbc\&gt; nmake /f win64.mak &lt;options&gt;</code><br><br>
-
-<p>
-Despite the name, win64.mak is used to build both 32-bit and 64-bit binaries.
-With the Microsoft SDK scripts, you can switch between 32-bit and 64-bit
-target architectures with "setenv /x86" and "setenv /x64" commands.
-</p>
-
-<p>
-To build the .msi installer file:<br><br>
-
-    <code>C:\psqlodbc\&gt; nmake /f win64.mak installer</code><br><br>
-
-The resulting installer file goes to installer/x64 or installer/x86 directory.
-</p>
-
-<p>
-To build both 32-bit and 64-bit versions in one command:<br><br>
-
-    <code>C:\psqlodbc\&gt; nmake /f win64.mak world</code><br><br>
-</p>
-
-
-<p>
-The following build options may be used, either on the command line, or
-by creating a file called "windows-local.mak".
-</p>
-
-
-<p>
-<table cellspacing="0" cellpadding="3" width="780" border=1>
-
-  <tr>
-    <td>Valiable</td>
-    <td>Values</td>
-    </tr>
-  <tr>
-    <td>CFG</td>
-    <td>Release(default), or Debug</td>
-    </tr>
-  <tr>
-    <td>PG_INC</td>
-    <td>$(PROGRAMFILES)\PostgreSQL\9.3\include</td>
-    </tr>
-  <tr>
-    <td>PG_LIB</td>
-    <td>$(PROGRAMFILES)\PostgreSQL\9.3\lib</td>
-    </tr>
-  <tr>
-    <td>SSL_INC</td>
-    <td>C:\OpenSSL-Win32\include</td>
-    </tr>
-  <tr>
-   <td>SSL_LIB</td>
-   <td>C:\OpenSSL-Win32\lib</td>
-    </tr>
-  <tr>
-    <td>LINKMT</td>
-    <td>MT</td>
-  </tr>
-  <tr>
-    <td>ANSI_VERSION</td>
-    <td>no (If set to "yes", output dll name to psqlodbc30a.dll)</td>
-  </tr>
-  <tr>
-    <td>MSDTC</td>
-    <td>yes</td>
-  </tr>
-  <tr>
-    <td>USE_LIBPQ</td>
-    <td>yes (libpq is required) </td>
-  </tr>
-  <tr>
-    <td>USE_SSPI</td>
-    <td>yes (secur32 and crypt32 libraries are required) </td>
-  </tr>
-  <tr>
-    <td>USE_GSS</td>
-    <td>no (gssapi library is required) </td>
-  </tr>
-  </table></p>
-
-<ol>
-<li>UNICODE is the default (psqlodbc35w.dll), unless ANSI_VERSION is selected (psqlodbc30a.dll)</li>
-<li>libpq.dll is used supported.</li>
-<li>SSL and Kerberos are original equipment.</li>
-<li>ODBCVER becomes 0x351 when UNICODE is selected, or becomes 0x0300 with ANSI_VERSION == Yes.</li>
-<li>If MSDTC == Yes, "pgxalib.dll" is created.</li>
-<li>If MSDTC is enabled, ANSI_VERSION also creates "pgenlista.dll", or UNICODE creates "pgenlist.dll".</li>
-</ol>
-
 <h2>Building with MSBuild</h2>
 
-See winbuild/readme.txt in the source directory for details.
+Use MSBuild.exe to build the driver for the currently active target:<br><br>
 
-<h2>IDE Method</h2>
+    <code>C:\psqlodbc\&gt; MSBuild</code><br><br>
 
-<p>A Microsoft Visual Studio project file (and workspace) is included in the source tree.
-</p>
-
-<p><strong>psqlodbc.dsp</strong>
- can be used with Microsoft Visual C++ 6.0.
-</p>
-
-<p><strong>psqlodbc.proj</strong> and
-<strong>psqlodbc.sln</strong>
-can be used with Microsoft Visual C++ 2005 Edition (including the Express edition which can be downloaded free of charge from <a href="http://msdn.microsoft.com/vstudio/express/visualc/usingpsdk/default.aspx">http://msdn.microsoft.com/vstudio/express/visualc/usingpsdk/default.aspx</a>)
+<p>
+The default target performs a full build, which includes ANSI and Unicode
+drivers, both 32-bit and 64-bit versions, and also builds the installers.
+The resulting drivers can be found in the x86_ANSI_Release and
+x64_Unicode_Release directories, and the installers in x86_Release and
+x64_Release directories (or *_Debug instead of *_Release, when building in Debug configuration).
 </p>
 
 <p>
-     Preparation before the build:
-</p>
-<ol>
-  <li>The Windows distribution of PostgreSQL will install the required headers and libraries into C:\Program Files\PostgreSQL\9.2
-  <li>OpenSSL should be installed into C:\OpenSSL (OpenSSL binaries can be downloaded from <a href="http://www.slproweb.com/products/Win32OpenSSL.html">http://www.slproweb.com/products/Win32OpenSSL.html</a>)
-</li></ol>
-
-<p>
-       If you want to change the installation arrangement, it
-is necessary to edit the project settings.
+Other targets are available for more fine-grained builds: BuildDriver,
+BuildDriverBoth, BuildInstaller. See winbuild.proj for details.
 </p>
 
 <p>
-        Note:
+By default, the drivers are built with libpq and SSPI support, and without
+GSSAPI support. This is also the configuration used for the official binaries.
+To build with other options, copy winbuild\configuration-defaults.props file
+into winbuild\configuration-local.props, and edit the settings. The
+configuration-local.props file can also be used to specify non-standard
+locations for PostgreSQL and OpenSSL headers and libraries.
 </p>
-
-<p>
-The default build settings will create the following driver:
-</p>
-
-<ol>
-<li>UNICODE support.
-<li>libpq and SSL equipped are supported.
-<li>Kerberos are supported peculiar by psqlODBC.
-<li>ODBCVER is 0x0351.
-<li>The driver filename is "psqlodbc35w.dll".</li></ol>
 
 </body>
 </html>

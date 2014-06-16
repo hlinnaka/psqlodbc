@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="..\winbuild\psqlodbc.common.props" />
+
+  <PropertyGroup>
+    <OutDir>..\$(TARGET_CPU)_$(Configuration)\</OutDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Candle>"$(WIX)bin\candle" -nologo</Candle>
+    <Light>"$(WIX)bin\light" -nologo</Light>
+  </PropertyGroup>
+
+  <Target Name="Build">
+
+    <!-- These PropertyGroups have to be inside the Target element, because
+         they depend on POSTGRESDRIVERVERSION which is defined by running
+         the pre-Build target DetermineVersion. Hence POSTGRESDRIVERVERSION is
+         not at the top-Project level -->
+    <!-- FIXME: this needs to be updated by hand when the major version changes -->
+    <!-- Version 9.2 used product code 838E187D-8B7A-473d-B93C-C8E970B15D2B -->
+    <PropertyGroup Condition="$(POSTGRESDRIVERVERSION.substring(0,5))=='09.03'">
+      <PRODUCTCODE>1F896F2F-5756-4d22-B5A3-040796C9B485</PRODUCTCODE>
+      <SUBLOC>0903</SUBLOC>
+    </PropertyGroup>
+
+    <PropertyGroup>
+      <CANDLE_MSM_OPTS>-dLIBPQBINDIR="$(PG_BIN)"</CANDLE_MSM_OPTS>
+      <CANDLE_MSM_OPTS Condition="$(USE_GSS)==true">$(CANDLE_MSM_OPTS) -dGSSBINDIR="$(GSSBINDIR)"</CANDLE_MSM_OPTS>
+      <CANDLE_OPTS>-dPlatform="$(TARGET_CPU)" -dConfiguration=$(Configuration) -dVERSION=$(POSTGRESDRIVERVERSION) -dSUBLOC=$(SUBLOC) -dPRODUCTCODE=$(PRODUCTCODE)</CANDLE_OPTS>
+    </PropertyGroup>
+
+    <!-- Build Merge module (.msm) -->
+    <Exec
+      command='$(Candle) $(CANDLE_OPTS) $(CANDLE_MSM_OPTS) -o $(OutDir)\psqlodbcm.wixobj psqlodbcm_cpu.wxs' />
+    <Exec
+      command='$(Light) -o $(OutDir)\psqlodbc_$(TARGET_CPU).msm $(OutDir)\psqlodbcm.wixobj' />
+
+    <!-- Build Installer (.msi) -->
+    <Exec
+      command='$(CANDLE) $(CANDLE_OPTS) -dMERGEM=$(OutDir)\psqlodbc_$(TARGET_CPU).msm -o $(OutDir)\psqlodbc.wixobj psqlodbc_cpu.wxs' />
+    <Exec
+      command='$(Light) -ext WixUIExtension -cultures:en-us -o $(OutDir)\psqlodbc_$(TARGET_CPU).msi $(OutDir)\psqlodbc.wixobj' />
+
+    <!-- Fix the driver DLL's name entry in the .msi file, to work around a
+         WiX bug -->
+    <Exec
+      command='cscript modify_msi.vbs $(OutDir)\psqlodbc_$(TARGET_CPU).msi' />
+
+  </Target>
+</Project>

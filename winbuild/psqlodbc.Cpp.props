@@ -2,28 +2,104 @@
 ***********************************************************************************************
 psqlodbc.Cpp.props
 
+Set properties common for all C/C++ projects.
+
 ***********************************************************************************************
 -->
-
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <!--		-->
   <Import Project="pguser.Cpp.props" />
-  <PropertyGroup Condition="'$(Platform)'=='Win32'">
-      <WarningLevel>Level3</WarningLevel>
-      <DisableSpecificWarnings>4018</DisableSpecificWarnings>
+
+  <!-- Build Unicode version by default -->
+  <PropertyGroup Condition="'$(ANSI_VERSION)'==''">
+    <ANSI_VERSION>false</ANSI_VERSION>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Platform)'=='x64'">
-      <WarningLevel>Level3</WarningLevel>
-      <DisableSpecificWarnings>4018</DisableSpecificWarnings>
+
+  <PropertyGroup Condition="$(ANSI_VERSION)">
+    <TargetType>ANSI</TargetType>
   </PropertyGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+  <PropertyGroup Condition="!$(ANSI_VERSION)">
+    <TargetType>Unicode</TargetType>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IntDir>$(srcPath)$(TARGET_CPU)_$(TargetType)_$(Configuration)\</IntDir>
+    <OutDir>$(srcPath)$(TARGET_CPU)_$(TargetType)_$(Configuration)\</OutDir>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <UseDebugLibraries>false</UseDebugLibraries>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(ANSI_VERSION)">
+    <ODBCVER>0x0350</ODBCVER>
+    <DBMS_NAME>PostgreSQL ANSI</DBMS_NAME>
+  </PropertyGroup>
+  <PropertyGroup Condition="!$(ANSI_VERSION)">
+    <ODBCVER>0x0351</ODBCVER>
+    <DBMS_NAME>PostgreSQL Unicode</DBMS_NAME>
+  </PropertyGroup>
+
+  <!-- Append (x64) suffix to the 64-bit driver's name -->
+  <PropertyGroup Condition="'$(Platform)'=='x64'" >
+    <DBMS_NAME>$(DBMS_NAME)(x64)</DBMS_NAME>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup Condition="!$(ANSI_VERSION)" >
+    <ClCompile>
+      <PreprocessorDefinitions>UNICODE_SUPPORT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <PropertyGroup Condition="$(ANSI_VERSION)">
+    <MAINDLL>psqlodbc30a</MAINDLL>
+    <MAINDEF>$(srcPath)psqlodbca.def</MAINDEF>
+    <DTCDLL>pgenlista</DTCDLL>
+  </PropertyGroup>
+  <PropertyGroup Condition="!$(ANSI_VERSION)">
+    <MAINDLL>psqlodbc35w</MAINDLL>
+    <MAINDEF>$(srcPath)psqlodbc.def</MAINDEF>
+    <DTCDLL>pgenlist</DTCDLL>
+  </PropertyGroup>
+
+  <!-- MEMORY_DEBUG -->
+  <ItemDefinitionGroup Condition="$(MEMORY_DEBUG)" >
+    <ClCompile>
+      <PreprocessorDefinitions>_MEMORY_DEBUG_;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PreprocessorDefinitions>ODBCVER=$(ODBCVER);DBMS_NAME="$(DBMS_NAME)";%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup>
+    <!-- Set general compiler options -->
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <WarningLevel>$(WarningLevel)</WarningLevel>
-      <Optimization>Disabled</Optimization>
+      <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PrecompiledHeaderFile />
-      <DisableSpecificWarnings>$(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <!-- Disable warnings about signed/unsigned mismatch in comparisons -->
+      <DisableSpecificWarnings>4018</DisableSpecificWarnings>
+      <!-- _CRT_SECURE_NO_DEPRECATE to disable warning about using sprintf -->
+      <PreprocessorDefinitions>_CRT_SECURE_NO_DEPRECATE;DYNAMIC_LOAD;WIN_MULTITHREAD_SUPPORT;WIN32;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -32,60 +108,29 @@ psqlodbc.Cpp.props
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
     </Link>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+
+  <ItemDefinitionGroup Condition="$(MSDTC)">
     <ClCompile>
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <WarningLevel>$(WarningLevel)</WarningLevel>
-      <Optimization>Disabled</Optimization>
-      <SDLCheck>true</SDLCheck>
-      <PrecompiledHeaderFile />
-      <DisableSpecificWarnings>$(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <PreprocessorDefinitions>_HANDLE_ENLIST_IN_DTC_;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
-    <Link>
-      <SubSystem>Windows</SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
-      <ModuleDefinitionFile>$(srcPath)$(TargetName).def</ModuleDefinitionFile>
-      <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
-    </Link>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
-      <WarningLevel>$(WarningLevel)</WarningLevel>
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <SDLCheck>true</SDLCheck>
-      <PrecompiledHeaderFile />
-      <DisableSpecificWarnings>$(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <ModuleDefinitionFile>$(srcPath)$(TargetName).def</ModuleDefinitionFile>
-      <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
-    </Link>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <ClCompile>
-      <WarningLevel>$(WarningLevel)</WarningLevel>
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <Optimization>MaxSpeed</Optimization>
-      <FunctionLevelLinking>true</FunctionLevelLinking>
-      <IntrinsicFunctions>true</IntrinsicFunctions>
-      <SDLCheck>true</SDLCheck>
-      <PrecompiledHeaderFile />
-      <DisableSpecificWarnings>$(DisableSpecificWarnings)</DisableSpecificWarnings>
-    </ClCompile>
-    <Link>
-      <SubSystem>Windows</SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
-      <EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <OptimizeReferences>true</OptimizeReferences>
-      <ModuleDefinitionFile>$(srcPath)$(TargetName).def</ModuleDefinitionFile>
-      <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
     </Link>
   </ItemDefinitionGroup>
 </Project>

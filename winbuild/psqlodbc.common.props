@@ -1,0 +1,49 @@
+<!--
+***********************************************************************************************
+psqlodbc.common.props
+
+Set properties common for all projects, including the installer.
+
+***********************************************************************************************
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+    <srcPath>..\</srcPath>
+  </PropertyGroup>
+
+  <!-- Deduce Platform from the TARGET_CPU variable. TARGET_CPU is set
+       by "setenv /x86" and "setenv /x64", or passed down from the top
+       project file -->
+  <PropertyGroup Condition="'$(TARGET_CPU)'=='x86'">
+    <Platform>Win32</Platform>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TARGET_CPU)'=='x64'">
+    <Platform>x64</Platform>
+  </PropertyGroup>
+
+  <!-- Load config options -->
+  <Import Project="configuration-defaults.props" />
+  <Import Project="configuration-local.props" Condition="exists('configuration-local.props')"/>
+
+  <!--
+    Extract POSTGRESDRIVERVERSION and PG_DRVFILE_VERSION defines from
+    version.h into MSBuild properties. Note that this is a Target - the
+    properies won't be available until the Target has been run.
+   -->
+  <Target Name="DetermineVersion" BeforeTargets="Build">
+
+    <ReadLinesFromFile File="..\version.h">
+      <Output TaskParameter="Lines" PropertyName="version_h_lines" />
+    </ReadLinesFromFile>
+
+    <PropertyGroup>
+      <POSTGRESDRIVERVERSION>$([System.Text.RegularExpressions.Regex]::Match($(version_h_lines), `#define\s+POSTGRESDRIVERVERSION\s+"(.+?)"`).get_Groups().get_Item(1))</POSTGRESDRIVERVERSION>
+      <PG_DRVFILE_VERSION>$([System.Text.RegularExpressions.Regex]::Match($(version_h_lines), `#define\s+PG_DRVFILE_VERSION\s+(\S+?);`).get_Groups().get_Item(1))</PG_DRVFILE_VERSION>
+    </PropertyGroup>
+
+    <Message Text='Extracted POSTGRESDRIVERVERSION from version.h: $(POSTGRESDRIVERVERSION)' />
+    <Message Text='Extracted PG_DRVFILE_VERSION from version.h: $(PG_DRVFILE_VERSION)' />
+  </Target>
+
+</Project>
