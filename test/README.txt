@@ -30,23 +30,38 @@ Windows
 
 To run the test suite, you need first to build and install the driver, and
 create a Data Source with the name "psqlodbc_test_dsn". This DSN is used by
-all the regression tests, and it should point to a valid PostgrSQL server
+all the regression tests, and it should point to a valid PostgrSQL server,
+to a database called "contrib_regression".
 
-The Windows test suite makes use of environment variable PG_BIN to find the
-location of pg_regress and the location of the binaries of PostgreSQL that
-are passed to it. So be sure to set it accordingly. If the PostgreSQL server
-is not running locally, at the default port, you will also need to pass
-extra options to specify the hostname and port of the same server that the
-DSN points to.
+During development, it's useful to use a driver specifically registered
+to point to the output directory of the build. For example:
 
-Then type the following commands to run the tests:
+  odbcconf INSTALLDRIVER "psqlodbc_test_driver|Driver=C:\psqlodbc\x64_ANSI_Debug\psqlodbc30a.dll"
 
-  nmake /f win.mak
-  nmake /f win.mak installcheck
+To create the required data source, using that driver:
 
-or for a non-default server host
+  odbcconf CONFIGDSN "psqlodbc_test_driver" "DSN=psqlodbc_test_dsn|Description=psqlodbc regression tests|Database=contrib_regression|Servername=localhost"
 
-  nmake /f win.mak installcheck REGRESSOPTS=--host=myserver.mydomain
+NOTE: The above commands must be run as Administrator. Odbcconf will not
+give any error message if you don't have sufficient privileges!
+
+The Windows test suite makes use of the property PG_BIN in the
+winbuild/configuration-defaults.props or winbuild/configuration-local.props
+file, to find the pg_regress binary. Note that psql version 9.4 or above is
+required!
+
+If the PostgreSQL server is not running locally, at the default port, you
+will also need to pass extra options to specify the hostname and port of the
+same server that the DSN points to.
+
+After setting up the psqlodbc_test_dsn, and building the driver itself, you
+can run the regression tests with the command:
+
+  msbuild /t:installcheck
+
+or if the server is not running locally:
+
+  msbuild /t:installcheck /p:REGRESSOPTS=--host=myserver.mydomain
 
 Development
 -----------

@@ -67,6 +67,11 @@ Targets:
         <MSBuild Projects="installer\installer.proj" Targets="Build" />
     </Target>
 
+    <!-- Run regression tests -->
+    <Target Name="installcheck">
+        <MSBuild Projects="test\winregress.proj" Targets="installcheck" />
+    </Target>
+
     <!-- Remove all output directories -->
     <Target Name="Clean">
         <!-- Installer output directories -->

@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>regress</RootNamespace>
+    <ProjectName>regress</ProjectName>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.default.props" />
+
+  <Import Project="..\winbuild\psqlodbc.common.props" />
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+
+  <!-- TODO: we don't read the test names from the "tests" file. Instead,
+       we just grab everything in src directory that fits the pattern.
+    -->
+  <ItemGroup>
+    <TestSources Include="src\*-test.c" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+
+  <!-- Compile the test programs -->
+  <Target Name="Build">
+    <MakeDir Directories="$(OutDir)"/>
+    <CL Sources="src\common.c;@(TestSources)" ObjectFileName="src\"
+        PreprocessorDefinitions="WIN32" />
+    <Link Sources="src\%(TestSources.filename).obj;src\common.obj"
+        OutputFile="src\%(filename).exe"
+        AdditionalDependencies="odbc32.lib" />
+  </Target>
+
+  <!-- Run the regression tests -->
+  <Target Name="installcheck" DependsOnTargets="Build">
+    <!-- Get the base names of the tests, from the list of .c files -->
+    <ItemGroup>
+     <TestNamesTmp Include="@(TestSources->Replace('src\',''))" />
+     <TestNames Include="@(TestNamesTmp->Replace('-test.c',''))" />
+    </ItemGroup>
+
+    <!-- Create .sql files to launch the test programs -->
+    <WriteLinesToFile File="sql\%(TestNames.identity).sql" Lines='\! "./src/%(Identity)-test"' Overwrite="true" />
+
+    <Exec command='"$(PG_BIN)\pg_regress" --inputdir=. --psqldir="$(PG_BIN)" --dbname="contrib_regression" $(REGRESSOPTS) sampletables @(TestNames, &apos; &apos;)' />
+
+  </Target>
+
+  <!-- Run the DTC regression tests -->
+  <Target Name="dtccheck" DependsOnTargets="BuildDtcTests">
+    <!-- Get the base names of the tests, from the list of .c files -->
+    <ItemGroup>
+     <DtcTestNamesTmp Include="@(DtcTestSources->Replace('src\',''))" />
+     <TestNames Include="@(DtcTestNamesTmp->Replace('-test.cpp',''))" />
+    </ItemGroup>
+
+    <!-- Create .sql files to launch the test programs -->
+    <WriteLinesToFile File="sql\%(TestNames.identity).sql" Lines='\! "./src/%(Identity)-test"' Overwrite="true" />
+
+    <Exec command='"$(PG_BIN)\pg_regress" --inputdir=. --psqldir="$(PG_BIN)" --dbname="contrib_regression" $(REGRESSOPTS) sampletables @(TestNames, &apos; &apos;)' />
+
+  </Target>
+
+</Project>
