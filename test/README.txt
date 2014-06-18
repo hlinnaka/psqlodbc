@@ -63,6 +63,22 @@ or if the server is not running locally:
 
   msbuild /t:installcheck /p:REGRESSOPTS=--host=myserver.mydomain
 
+
+MSDTC on Windows
+================
+
+1. Administrative Tools -> Component Services -> My Computer -> Distributed Transactions -> Local DTC -> Security tab -> Enable XA Transactions
+
+2. Create a value in the registry pointing to the pgxalib.dll:
+
+reg add HKLM\SOFTWARE\Microsoft\MSDTC\XADLL /v pgxalib.dll /d "C:\psqlodbc\x64_ANSI_Debug\pgxalib.dll"
+
+(see https://support.microsoft.com/kb/817066 for more information on that)
+
+3. Run the DTC regression test:
+
+  msbuild /t:dtccheck
+
 Development
 -----------
 

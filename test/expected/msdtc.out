@@ -1,0 +1,11 @@
+\! "./src/msdtc-test"
+connected
+connected
+Result set:
+1
+2
+Result set:
+1
+2
+disconnecting
+finished!

@@ -39,22 +39,38 @@
     -->
   <ItemGroup>
     <TestSources Include="src\*-test.c" />
+
+    <DtcTestSources Include="src\*-test.cpp" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 
   <!-- Compile the test programs -->
-  <Target Name="Build">
+  <Target Name="BuildCommon">
     <MakeDir Directories="$(OutDir)"/>
-    <CL Sources="src\common.c;@(TestSources)" ObjectFileName="src\"
+    <CL Sources="src\common.c" ObjectFileName="src\"
+        PreprocessorDefinitions="WIN32" />
+  </Target>
+  <Target Name="BuildTests" DependsOnTargets="BuildCommon">
+    <CL Sources="@(TestSources)" ObjectFileName="src\"
         PreprocessorDefinitions="WIN32" />
     <Link Sources="src\%(TestSources.filename).obj;src\common.obj"
         OutputFile="src\%(filename).exe"
         AdditionalDependencies="odbc32.lib" />
   </Target>
 
+  <Target Name="BuildDtcTests" DependsOnTargets="BuildCommon">
+    <CL Sources="@(DtcTestSources)" ObjectFileName="src\"
+        PreprocessorDefinitions="WIN32" />
+
+    <!-- DTC tests need to be linked with xolehlp.lib -->
+    <Link Sources="src\%(DtcTestSources.filename).obj;src\common.obj"
+        OutputFile="src\%(filename).exe"
+        AdditionalDependencies="odbc32.lib;xolehlp.lib" />
+  </Target>
+
   <!-- Run the regression tests -->
-  <Target Name="installcheck" DependsOnTargets="Build">
+  <Target Name="installcheck" DependsOnTargets="BuildTests">
     <!-- Get the base names of the tests, from the list of .c files -->
     <ItemGroup>
      <TestNamesTmp Include="@(TestSources->Replace('src\',''))" />
