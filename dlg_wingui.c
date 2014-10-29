@@ -77,7 +77,6 @@ SetDlgStuff(HWND hdlg, const ConnInfo *ci)
 	SetDlgItemText(hdlg, IDC_PORT, ci->port);
 
 	dsplevel = 0;
-#ifdef USE_LIBPQ
 	libpq_exist = SSLLIB_check();
 mylog("libpq_exist=%d\n", libpq_exist);
 	if (libpq_exist)
@@ -86,7 +85,6 @@ mylog("libpq_exist=%d\n", libpq_exist);
 		dsplevel = 2;
 	}
 	else
-#endif /* USE_LIBPQ */
 	{
 mylog("SendMessage CTL_COLOR\n");
 		SendMessage(GetDlgItem(hdlg, IDC_NOTICE_USER), WM_CTLCOLOR, 0, 0);
@@ -685,9 +683,6 @@ ds_options2Proc(HWND hdlg,
 			/*CheckDlgButton(hdlg, DS_LOWERCASEIDENTIFIER, ci->lower_case_identifier);*/
 			CheckDlgButton(hdlg, DS_GSSAUTHUSEGSSAPI, ci->gssauth_use_gssapi);
 
-#if	!defined(USE_LIBPQ) && !defined(USE_SSPI) && !defined(USE_GSS)
-			EnableWindow(GetDlgItem(hdlg, DS_GSSAUTHUSEGSSAPI), FALSE);
-#endif
 			EnableWindow(GetDlgItem(hdlg, DS_FAKEOIDINDEX), atoi(ci->show_oid_column));
 
 			/* Datasource Connection Settings */
@@ -759,21 +754,6 @@ ds_options3Draw(HWND hdlg, const ConnInfo *ci)
 	BOOL	enable = TRUE;
 	static BOOL defset = FALSE;
 
-	/* The use of LIBPQ library */
-#ifdef	USE_LIBPQ
-	if (ci->prefer_libpq < 0)
-		CheckDlgButton(hdlg, DS_DEFAULT_LIBPQ_USE, 1);
-	else if (0 == ci->prefer_libpq)
-		CheckDlgButton(hdlg, DS_NO_LIBPQ_USE, 1);
-	else 
-		CheckDlgButton(hdlg, DS_LIBPQ_USE, 1);
-#else
-	enable = FALSE;
-	EnableWindow(GetDlgItem(hdlg, DS_DEFAULT_LIBPQ_USE), enable);
-	EnableWindow(GetDlgItem(hdlg, DS_LIBPQ_USE), enable);
-	EnableWindow(GetDlgItem(hdlg, DS_NO_LIBPQ_USE), enable);
-#endif /* USE_LIBPQ */
-
 #ifdef	_HANDLE_ENLIST_IN_DTC_
 	switch (ci->xa_opt)
 	{
@@ -807,16 +787,6 @@ static int
 ds_options3_update(HWND hdlg, ConnInfo *ci)
 {
 	mylog("%s: got ci = %p\n", __FUNCTION__, ci);
-
-#ifdef	USE_LIBPQ
-	/* Libpq use */
-	if (IsDlgButtonChecked(hdlg, DS_DEFAULT_LIBPQ_USE))
-		ci->prefer_libpq = -1;
-	else if (IsDlgButtonChecked(hdlg, DS_NO_LIBPQ_USE))
-		ci->prefer_libpq = 0;
-	else
-		ci->prefer_libpq = 1;
-#endif /* USE_LIBPQ */
 
 #ifdef	_HANDLE_ENLIST_IN_DTC_
 	if (IsDlgButtonChecked(hdlg, DS_DTC_LINK_ONLY))

@@ -20,9 +20,7 @@
 #endif /* _WIN32_WINNT */
 
 #include "connection.h"
-#ifdef USE_LIBPQ
 #include <libpq-fe.h>
-#endif /* USE_LIBPQ */
 #include "misc.h"
 
 #include <stdio.h>
@@ -53,7 +51,6 @@
 #include "multibyte.h"
 
 #include "pgapifunc.h"
-#include "md5.h"
 
 #define STMT_INCREMENT 16		/* how many statement holders to allocate
 								 * at a time */
@@ -299,9 +296,6 @@ CC_conninfo_init(ConnInfo *conninfo, UInt4 option)
 	conninfo->gssauth_use_gssapi = -1;
 	conninfo->keepalive_idle = -1;
 	conninfo->keepalive_interval = -1;
-#ifdef USE_LIBPQ
-	conninfo->prefer_libpq = -1;
-#endif /* USE_LIBPQ */
 #ifdef	_HANDLE_ENLIST_IN_DTC_
 	conninfo->xa_opt = -1;
 #endif /* _HANDLE_ENLIST_IN_DTC_ */
@@ -334,9 +328,6 @@ CC_copy_conninfo(ConnInfo *ci, const ConnInfo *sci)
 	CORR_STRCPY(translation_dll);
 	CORR_STRCPY(translation_option);
 	CORR_VALCPY(focus_password);
-#ifdef USE_LIBPQ
-	CORR_VALCPY(prefer_libpq);
-#endif /* USE_LIBPQ */
 	NAME_TO_NAME(ci->conn_settings, sci->conn_settings);
 	CORR_VALCPY(disallow_premature);
 	CORR_VALCPY(allow_keyset);
@@ -554,24 +545,6 @@ CC_examine_global_transaction(ConnectionClass *self)
 #endif /* _HANDLE_ENLIST_IN_DTC_ */
 }
 
-static void
-CC_endup_authentication(ConnectionClass *self)
-{
-	SocketClass	*sock = CC_get_socket(self);
-
-	if (!sock)
-		return;
-#ifdef	USE_SSPI
-	if (0 != self->auth_svcs)
-	{
-		ReleaseSvcSpecData(sock, self->auth_svcs);
-		self->auth_svcs = 0;
-	}
-#endif /* USE_SSPI */
-#ifdef	USE_GSS
-	pg_GSS_cleanup(sock);
-#endif /* USE_GSS */
-}
 
 static const char *bgncmd = "BEGIN";
 static const char *cmtcmd = "COMMIT";
@@ -850,46 +823,6 @@ CC_set_translation(ConnectionClass *self)
 	}
 #endif
 	return TRUE;
-}
-
-static	int
-md5_auth_send(ConnectionClass *self, const char *salt)
-{
-	char	*pwd1 = NULL, *pwd2 = NULL;
-	ConnInfo   *ci = &(self->connInfo);
-	SocketClass	*sock = self->sock;
-	size_t		md5len;
-
-inolog("md5 pwd=%s user=%s salt=%02x%02x%02x%02x%02x\n", PRINT_NAME(ci->password), ci->username, (UCHAR)salt[0], (UCHAR)salt[1], (UCHAR)salt[2], (UCHAR)salt[3], (UCHAR)salt[4]);
-	if (!(pwd1 = malloc(MD5_PASSWD_LEN + 1)))
-		return 1;
-	if (!EncryptMD5(SAFE_NAME(ci->password), ci->username, strlen(ci->username), pwd1))
-	{
-		free(pwd1);
-		return 1;
-	}
-	if (!(pwd2 = malloc(MD5_PASSWD_LEN + 1)))
-	{
-		free(pwd1);
-		return 1;
-	}
-	if (!EncryptMD5(pwd1 + strlen("md5"), salt, 4, pwd2))
-	{
-		free(pwd2);
-		free(pwd1);
-		return 1;
-	}
-	free(pwd1);
-	inolog("putting p and %s\n", pwd2);
-	SOCK_put_char(sock, 'p');
-
-	md5len = strlen(pwd2);
-	SOCK_put_int(sock, (Int4) (4 + md5len + 1), 4);
-	SOCK_put_n_char(sock, pwd2, (md5len + 1));
-	SOCK_flush_output(sock);
-inolog("sockerr=%d\n", SOCK_get_errcode(sock));
-	free(pwd2);
-	return 0;
 }
 
 int
@@ -1220,65 +1153,12 @@ mylog("!!! usrname=%s server=%s\n", usrname, ci->server);
 	return cnt;
 }
 
-#define	PROTOCOL3_OPTS_MAX	20
-static int	protocol3_packet_build(ConnectionClass *self)
-{
-	CSTR	func = "protocol3_packet_build";
-	SocketClass	*sock = self->sock;
-	size_t	slen;
-	char	*packet, *ppacket;
-	ProtocolVersion	pversion;
-	const	char	*opts[PROTOCOL3_OPTS_MAX], *vals[PROTOCOL3_OPTS_MAX];
-	int	cnt, i;
 
-	cnt = protocol3_opts_array(self, opts, vals, FALSE, sizeof(opts) / sizeof(opts[0]));
-	if (cnt < 0)
-		return 0;
-
-	slen =  sizeof(ProtocolVersion);
-	for (i = 0; i < cnt; i++)
-	{
-		slen += (strlen(opts[i]) + 1);
-		slen += (strlen(vals[i]) + 1);
-	}
-	slen++;
-
-	if (packet = malloc(slen), !packet)
-	{
-		CC_set_error(self, CONNECTION_SERVER_NOT_REACHED, "Could not allocate a startup packet", func);
-		return 0;
-	}
-
-	mylog("sizeof startup packet = %d\n", slen);
-
-	sock->pversion = PG_PROTOCOL_LATEST;
-	/* Send length of Authentication Block */
-	SOCK_put_int(sock, (Int4) (slen + 4), 4);
-
-	ppacket = packet;
-	pversion = (ProtocolVersion) htonl(sock->pversion);
-	memcpy(ppacket, &pversion, sizeof(pversion));
-	ppacket += sizeof(pversion);
-	for (i = 0; i < cnt; i++)
-	{
-		strcpy(ppacket, opts[i]);
-		ppacket += (strlen(opts[i]) + 1);
-		strcpy(ppacket, vals[i]);
-		ppacket += (strlen(vals[i]) + 1);
-	}
-	*ppacket = '\0';
-
-	SOCK_put_n_char(sock, packet, slen);
-	SOCK_flush_output(sock);
-	free(packet);
-
-	return 1;
-}
-
-#ifdef USE_LIBPQ
 CSTR	l_login_timeout = "connect_timeout";
 CSTR	l_keepalives_idle = "keepalives_idle";
 CSTR	l_keepalives_interval = "keepalives_interval";
+
+#define        PROTOCOL3_OPTS_MAX      20
 
 static char	*protocol3_opts_build(ConnectionClass *self)
 {
@@ -1379,7 +1259,6 @@ static char	*protocol3_opts_build(ConnectionClass *self)
 inolog("return conninfo=%s(%d)\n", conninfo, strlen(conninfo));
 	return conninfo;
 }
-#endif /* USE_LIBPQ */
 
 static char CC_initial_log(ConnectionClass *self, const char *func)
 {
@@ -1471,7 +1350,6 @@ static char CC_initial_log(ConnectionClass *self, const char *func)
 }
 
 static	char	CC_setenv(ConnectionClass *self);
-#ifdef USE_LIBPQ
 static int LIBPQ_connect(ConnectionClass *self);
 static char
 LIBPQ_CC_connect(ConnectionClass *self, char password_req, char *salt_para)
@@ -1493,7 +1371,6 @@ LIBPQ_CC_connect(ConnectionClass *self, char password_req, char *salt_para)
 
 	return 1;
 }
-#endif /* USE_LIBPQ */
 
 #if	defined(USE_SSPI) || defined(USE_GSS)
 /*
@@ -1527,535 +1404,18 @@ mylog("!!! %s settings=%s svcname=%p\n", __FUNCTION__, ci->conn_settings, svcnam
 }
 #endif /* USE_SSPI */
 
-/*
- *	Don't call PG_VERSION_XX() in original_CC_connect()
- *	  because the server version is not obtained yet.
- *	Invalidate those macros to inhibit the use.
- */
-#undef	STRING_AFTER_DOT
-#define	STRING_AFTER_DOT(string) DONT_CALL_PG_VERSION_xx_HERE
-
-static char
-original_CC_connect(ConnectionClass *self, char password_req, char *salt_para)
-{
-	SocketClass *sock = NULL;
-	ConnInfo   *ci = &(self->connInfo);
-	int		areq = -1;
-	int		ret = 0, beresp, sockerr;
-	char		msgbuffer[ERROR_MSG_LENGTH];
-	char		salt[5], notice[512];
-	CSTR		func = "original_CC_connect";
-	BOOL	startPacketReceived = FALSE, anotherVersionRetry;
-#ifdef	USE_SSPI
-	int	ssl_try_count, ssl_try_no;
-	char	ssl_call[2];
-	int	bReconnect = 0;
-#endif /* USE_SSPI */
-
-	mylog("%s: entering...\n", func);
-
-	/* lock the connetion during authentication */
-	ENTER_CONN_CS(self);
-#define	return	DONT_CALL_RETURN_FROM_HERE????
-
-	if (password_req != AUTH_REQ_OK)
-	{
-		sock = self->sock;		/* already connected, just authenticate */
-		CC_clear_error(self);
-	}
-	else
-	{
-		if (0 == CC_initial_log(self, func))
-			goto error_proc;
-
-#ifdef	USE_SSPI
-		ssl_try_count = 0;
-		switch (self->connInfo.sslmode[0])
-		{
-			case SSLLBYTE_REQUIRE:
-			case SSLLBYTE_VERIFY:
-				ssl_call[ssl_try_count++] = 'y';
-				break;
-			case SSLLBYTE_PREFER:
-				ssl_call[ssl_try_count++] = 'y';
-				ssl_call[ssl_try_count++] = 'n';
-				break;
-			case SSLLBYTE_ALLOW:
-				ssl_call[ssl_try_count++] = 'n';
-				ssl_call[ssl_try_count++] = 'y';
-				break;
-			default:
-				ssl_call[ssl_try_count++] = 'n';
-				break;
-		}
-		ssl_try_no = 0;
-#endif /* USE_SSPI */
-		anotherVersionRetry = FALSE;
-
-another_version_retry:
-
-		if (anotherVersionRetry)
-		{
-#ifdef	USE_SSPI
-			if (ssl_try_no < ssl_try_count)
-				ssl_try_no++;
-
-			if (ssl_try_no >= ssl_try_count)
-			{
-#endif /* USE_SSPI */
-				CC_set_error(self, CONNECTION_SERVER_NOT_REACHED, "Could not construct a socket to the server", func);
-				goto error_proc;
-#ifdef	USE_SSPI
-				ssl_try_no = 0;
-			}
-#endif /* USE_SSPI */
-			if (self->sock)
-			{
-				SOCK_Destructor(self->sock);
-				self->sock = (SocketClass *) 0;
-			}
-			self->status = CONN_NOT_CONNECTED;
-			CC_initialize_pg_version(self);
-			anotherVersionRetry = FALSE;
-		}
-		/*
-		 * If the socket was closed for some reason (like a SQLDisconnect,
-		 * but no SQLFreeConnect then create a socket now.
-		 */
-		if (!self->sock)
-		{
-			self->sock = SOCK_Constructor(self);
-			if (!self->sock)
-			{
-				CC_set_error(self, CONNECTION_SERVER_NOT_REACHED, "Could not construct a socket to the server", func);
-				goto error_proc;
-			}
-		}
-
-		sock = self->sock;
-
-		mylog("connecting to the server socket...\n");
-
-		SOCK_connect_to(sock, (short) atoi(ci->port), ci->server, self->login_timeout);
-		if (SOCK_get_errcode(sock) != 0)
-		{
-			CC_set_error(self, CONNECTION_SERVER_NOT_REACHED, "Could not connect to the server", func);
-			goto error_proc;
-		}
-		mylog("connection to the server socket succeeded.\n");
-
-		inolog("version=%d,%d\n", self->pg_version_major, self->pg_version_minor);
-#ifdef	USE_SSPI
-		if ('y' == ssl_call[ssl_try_no])
-		{
-			struct {
-				Int4	slen;
-				ProtocolVersion	pv;
-			} nego_packet;
-			char	rnego;
-
-			nego_packet.slen = htonl(sizeof(nego_packet));
-			nego_packet.pv = htonl(PG_NEGOTIATE_SSLMODE);
-			SOCK_put_n_char(sock, (char *) &nego_packet, sizeof(nego_packet));
-			SOCK_flush_output(sock);
-			if (0 != SOCK_get_errcode(sock))
-			{
-				mylog("%s:failed to send a negotiation packet\n", func);
-				goto sockerr_proc;
-			}
-			SOCK_get_n_char(sock, &rnego, 1);
-			if (0 != SOCK_get_errcode(sock))
-				goto sockerr_proc;
-			mylog("nego got '%c'\n", rnego);
-			switch (rnego)
-			{
-				case 'S':
-					if (!StartupSspiService(sock, SchannelService, ci, &bReconnect))
-					{
-						if (bReconnect != 0)
-						{
-							anotherVersionRetry = TRUE;
-							goto another_version_retry;
-						}
-						CC_set_error(self, CONN_INVALID_AUTHENTICATION, "Service negotation failed", func);
-						goto error_proc;
-					}
-					break;
-				case 'N':
-					ssl_try_no++;
-					if (ssl_try_no < ssl_try_count &&
-					    'y' != ssl_call[ssl_try_no])
-						break;
-					else
-					{
-						anotherVersionRetry = TRUE;
-						goto another_version_retry;
-					}
-				default:
-					CC_set_error(self, CONN_INVALID_AUTHENTICATION, "Service negotation failed", func);
-					goto error_proc;
-			}
-		}
-#endif /* USE_SSPI */
-		if (!protocol3_packet_build(self))
-			goto error_proc;
-
-		if (SOCK_get_errcode(sock) != 0)
-		{
-			CC_set_error(self, CONN_INVALID_AUTHENTICATION, "Failed to send the authentication packet", func);
-			goto error_proc;
-		}
-		mylog("sent the authentication block successfully.\n");
-	}
-
-
-	mylog("gonna do authentication\n");
-
-
-	/*
-	 * Now get the authentication request from backend
-	 */
-	{
-		BOOL	ReadyForQuery = FALSE, retry = FALSE;
-		uint32	leng = 0;
-#if defined(USE_GSS) || defined(USE_SSPI) || defined(USE_KRB5)
-		int	authRet;
-#endif
-
-		do
-		{
-			if (password_req != AUTH_REQ_OK)
-			{
-				beresp = 'R';
-				startPacketReceived = TRUE;
-			}
-			else
-			{
-				beresp = SOCK_get_id(sock);
-				mylog("auth got '%c'\n", beresp);
-				if (0 != SOCK_get_errcode(sock))
-					goto sockerr_proc;
-				if (beresp != 'E' || startPacketReceived)
-				{
-					leng = SOCK_get_response_length(sock);
-					inolog("leng=%d\n", leng);
-					if (0 != SOCK_get_errcode(sock))
-						goto sockerr_proc;
-				}
-				startPacketReceived = TRUE;
-			}
-
-			switch (beresp)
-			{
-				case 'E':
-inolog("Ekita retry=%d\n", retry);
-					handle_error_message(self, msgbuffer, sizeof(msgbuffer), self->sqlstate, func, NULL);
-					CC_set_error(self, CONN_INVALID_AUTHENTICATION, msgbuffer, func);
-					qlog("ERROR from backend during authentication: '%s'\n", msgbuffer);
-					if (0 == strncmp(msgbuffer, "FATAL:", 6))
-					{
-						const char *emsg = msgbuffer + 8;
-						if (0 == strnicmp(emsg, "unsupported frontend protocol", 29))
-							retry = TRUE;
-#ifdef	USE_SSPI
-						else if ('y' != ssl_call[ssl_try_no] &&
-							 ssl_try_no + 1 < ssl_try_count)
-							retry = TRUE;
-#endif /* USE_SSPI */
-					}
-					else if (strnicmp(msgbuffer, "Unsupported frontend protocol", 29) == 0)
-						retry = TRUE;
-					if (retry)
-						break;
-
-					goto error_proc;
-				case 'R':
-
-					if (password_req != AUTH_REQ_OK)
-					{
-						mylog("in 'R' password_req=%s\n", ci->password);
-						areq = password_req;
-						if (salt_para)
-							memcpy(salt, salt_para, sizeof(salt));
-						password_req = AUTH_REQ_OK;
-						mylog("salt=%02x%02x%02x%02x%02x\n", (UCHAR)salt[0], (UCHAR)salt[1], (UCHAR)salt[2], (UCHAR)salt[3], (UCHAR)salt[4]);
-					}
-					else
-					{
-
-						areq = SOCK_get_int(sock, 4);
-						memset(salt, 0, sizeof(salt));
-						if (areq == AUTH_REQ_MD5)
-							SOCK_get_n_char(sock, salt, 4);
-						else if (areq == AUTH_REQ_CRYPT)
-							SOCK_get_n_char(sock, salt, 2);
-
-						mylog("areq = %d salt=%02x%02x%02x%02x%02x\n", areq, (UCHAR)salt[0], (UCHAR)salt[1], (UCHAR)salt[2], (UCHAR)salt[3], (UCHAR)salt[4]);
-					}
-					switch (areq)
-					{
-						case AUTH_REQ_OK:
-							break;
-
-						case AUTH_REQ_KRB4:
-							CC_set_error(self, CONN_AUTH_TYPE_UNSUPPORTED, "Kerberos 4 authentication not supported", func);
-							goto error_proc;
-
-						case AUTH_REQ_KRB5:
-#ifdef USE_KRB5
-							// pglock_thread();
-							authRet = pg_krb5_sendauth(self);
-							// pgunlock_thread();
-							if (authRet != 0)
-							{
-								/* Error message already filled in */
-								goto error_proc;
-							}
-							break;
-#endif /* USE_KRB5 */
-							CC_set_error(self, CONN_AUTH_TYPE_UNSUPPORTED, "Kerberos 5 authentication not supported", func);
-							goto error_proc;
-
-						case AUTH_REQ_PASSWORD:
-							mylog("in AUTH_REQ_PASSWORD\n");
-
-							if (NAME_IS_NULL(ci->password))
-							{
-								CC_set_error(self, CONNECTION_NEED_PASSWORD, "A password is required for this connection.", func);
-								ret = -areq; /* need password */
-								goto error_proc;
-							}
-
-							mylog("past need password\n");
-
-							SOCK_put_char(sock, 'p');
-							SOCK_put_int(sock, (Int4) (4 + strlen(SAFE_NAME(ci->password)) + 1), 4);
-							SOCK_put_n_char(sock, SAFE_NAME(ci->password), strlen(SAFE_NAME(ci->password)) + 1);
-							sockerr = SOCK_flush_output(sock);
-
-							mylog("past flush %dbytes\n", sockerr);
-							break;
-
-						case AUTH_REQ_CRYPT:
-							CC_set_error(self, CONN_AUTH_TYPE_UNSUPPORTED, "Password crypt authentication not supported", func);
-							goto error_proc;
-						case AUTH_REQ_MD5:
-							mylog("in AUTH_REQ_MD5\n");
-							if (NAME_IS_NULL(ci->password))
-							{
-								CC_set_error(self, CONNECTION_NEED_PASSWORD, "A password is required for this connection.", func);
-								if (salt_para)
-									memcpy(salt_para, salt, sizeof(salt));
-								ret = -areq; /* need password */
-								goto error_proc;
-							}
-							if (md5_auth_send(self, salt))
-							{
-								CC_set_error(self, CONN_INVALID_AUTHENTICATION, "md5 hashing failed", func);
-								goto error_proc;
-							}
-							break;
-
-						case AUTH_REQ_SCM_CREDS:
-							CC_set_error(self, CONN_AUTH_TYPE_UNSUPPORTED, "Unix socket credential authentication not supported", func);
-							goto error_proc;
-
-						case AUTH_REQ_GSS:
-							mylog("in AUTH_REQ_GSS\n");
-#if	defined(USE_SSPI)
-							if (!ci->gssauth_use_gssapi)
-							{
-								self->auth_svcs = KerberosService;
-								authRet = StartupSspiService(sock, self->auth_svcs, MakePrincHint(ci, TRUE), &bReconnect);
-								if (!authRet)
-								{
-									CC_set_error(self, CONN_INVALID_AUTHENTICATION, "Service negotation failed", func);
-									goto error_proc;
-								}
-								break;
-							}
-#endif	/* USE_SSPI */
-#ifdef	USE_GSS
-#ifdef	USE_SSPI
-							if (ci->gssauth_use_gssapi)
-#endif /* USE_SSPI */
-							{
-								// pglock_thread();
-								authRet = pg_GSS_startup(self, MakePrincHint(ci, FALSE));
-								// pgunlock_thread();
-								if (authRet != 0)
-								{
-									CC_set_errornumber(self, CONN_INVALID_AUTHENTICATION);
-									goto error_proc;
-								}
-								break;
-							}
-#endif /* USE_GSS */
-							CC_set_error(self, CONN_AUTH_TYPE_UNSUPPORTED, "GSS authentication not supported", func);
-							goto error_proc;
-
-						case AUTH_REQ_GSS_CONT:
-							mylog("in AUTH_REQ_GSS_CONT\n");
-#if	defined(USE_SSPI)
-							if (0 != self->auth_svcs)
-							{
-								authRet = ContinueSspiService(sock, self->auth_svcs, (void *) (leng - 4));
-								if (!authRet)
-								{
-									CC_set_error(self, CONN_INVALID_AUTHENTICATION, "Service continuation failed", func);
-									goto error_proc;
-								}
-								break;
-							}
-#endif /* USE_SSPI */
-#ifdef	USE_GSS
-							// pglock_thread();
-							authRet = pg_GSS_continue(self, leng - 4);
-							// pgunlock_thread();
-							if (authRet != 0)
-							{
-								CC_set_errornumber(self, CONN_INVALID_AUTHENTICATION);
-								goto error_proc;
-							}
-							break;
-#else
-							CC_set_error(self, CONN_AUTH_TYPE_UNSUPPORTED, "GSS authentication not supported", func);
-							goto error_proc;
-#endif
-
-						case AUTH_REQ_SSPI:
-							mylog("in AUTH_REQ_SSPI\n");
-#if	defined(USE_SSPI)
-							self->auth_svcs = ci->gssauth_use_gssapi ? KerberosService : NegotiateService;
-							if (!StartupSspiService(sock, self->auth_svcs, MakePrincHint(ci, TRUE), &bReconnect))
-							{
-								CC_set_error(self, CONN_INVALID_AUTHENTICATION, "Service negotation failed", func);
-								goto error_proc;
-							}
-							break;
-#else
-							CC_set_error(self, CONN_AUTH_TYPE_UNSUPPORTED, "SSPI authentication not supported", func);
-							goto error_proc;
-#endif
-
-						default:
-							CC_set_error(self, CONN_AUTH_TYPE_UNSUPPORTED, "Unknown authentication type", func);
-							goto error_proc;
-					}
-					break;
-				case 'S': /* parameter status */
-					getParameterValues(self);
-					break;
-				case 'K':		/* Secret key (6.4 protocol) */
-					self->be_pid = SOCK_get_int(sock, 4);		/* pid */
-					self->be_key = SOCK_get_int(sock, 4);		/* key */
-
-					break;
-				case 'Z':		/* Backend is ready for new query (6.4) */
-					EatReadyForQuery(self);
-					ReadyForQuery = TRUE;
-					break;
-				case 'N':	/* Notices may come */
-					handle_notice_message(self, notice, sizeof(notice), self->sqlstate, "CC_connect", NULL);
-					break;
-				default:
-					snprintf(notice, sizeof(notice), "Unexpected protocol character='%c' during authentication", beresp);
-					CC_set_error(self, CONN_INVALID_AUTHENTICATION, notice, func);
-					goto error_proc;
-			}
-			if (retry)
-			{
-				anotherVersionRetry = TRUE;
-				goto another_version_retry;
-			}
-		} while (!ReadyForQuery);
-	}
-
-sockerr_proc:
-	ret = 1;
-error_proc:
-#undef	return
-	CC_endup_authentication(self);
-	LEAVE_CONN_CS(self);
-	if (0 >= ret)
-		return ret;
-	if (0 != (sockerr = SOCK_get_errcode(sock)))
-	{
-		if (0 == CC_get_errornumber(self))
-		{
-			if (SOCKET_CLOSED == sockerr)
-				CC_set_error(self, CONN_INVALID_AUTHENTICATION, "Communication closed during authentication", func);
-			else
-				CC_set_error(self, CONN_INVALID_AUTHENTICATION, "Communication error during authentication", func);
-		}
-		return 0;
-	}
-
-	CC_clear_error(self);		/* clear any password error */
-
-	return 1;
-}
-/*
- *	Restore inhibited PG_VERSION_XX() macros.
- */
-#undef	STRING_AFTER_DOT
-#define STRING_AFTER_DOT(string)   (strchr(#string, '.') + 1)
-
 char
 CC_connect(ConnectionClass *self, char password_req, char *salt_para)
 {
 	ConnInfo *ci = &(self->connInfo);
 	CSTR	func = "CC_connect";
 	char		ret, *saverr = NULL, retsend;
-#ifdef USE_LIBPQ
-	BOOL	call_libpq = FALSE;
-#endif /* USE_LIBPQ */
 
 	mylog("%s: entering...\n", func);
 
 	mylog("sslmode=%s\n", self->connInfo.sslmode);
-#ifdef USE_LIBPQ
-	if (0 < ci->prefer_libpq)
-		call_libpq = TRUE;
-	else if (0 == ci->prefer_libpq)
-		call_libpq = FALSE;
-	else
-#ifdef	USE_SSPI
-	if (0 != self->svcs_allowed)
-		;
-	else
-#endif /* USE_SSPI */
-	if (self->connInfo.username[0] == '\0')
-		call_libpq = TRUE;
-	else if (self->connInfo.sslmode[0] != SSLLBYTE_DISABLE)
-		call_libpq = TRUE;
-	if (call_libpq)
-	{
-		ret = LIBPQ_CC_connect(self, password_req, salt_para);
-#ifdef USE_SSPI
-		/*
-		 *	If libpq is unavailable, try SSPI instead.
-		 */
-		if (0 == ret && CONN_UNABLE_TO_LOAD_DLL == CC_get_errornumber(self))
-		{
-			self->svcs_allowed |= (SchannelService | KerberosService | NegotiateService);
-			ret = original_CC_connect(self, password_req, salt_para);
-		}
-#endif /* USE_SSPI */
-	}
-	else
-#endif /* USE_LIBPQ */
-	{
-		ret = original_CC_connect(self, password_req, salt_para);
-#ifdef USE_LIBPQ
-		if (0 == ret && CONN_AUTH_TYPE_UNSUPPORTED == CC_get_errornumber(self))
-		{
-			SOCK_Destructor(self->sock);
-			self->sock = (SocketClass *) 0;
-			ret = LIBPQ_CC_connect(self, password_req, salt_para);
-		}
-#endif /* USE_LIBPQ */
-	}
+
+	ret = LIBPQ_CC_connect(self, password_req, salt_para);
 	if (ret <= 0)
 		return ret;
 
@@ -3263,8 +2623,8 @@ CC_send_function(ConnectionClass *self, int fnid, void *result_buf, int *actual_
 #define	return DONT_CALL_RETURN_FROM_HERE???
 	ENTER_INNER_CONN_CS(self, func_cs_count);
 
-	leng = 4 + sizeof(uint32) + 2 + 2
-		+ sizeof(uint16);
+	leng = 4 + sizeof(Int4) + 2 + 2
+		+ sizeof(Int2);
 
 	for (i = 0; i < nargs; i++)
 	{
@@ -3643,16 +3003,7 @@ static int LIBPQ_send_cancel_request(const ConnectionClass *conn);
 int
 CC_send_cancel_request(const ConnectionClass *conn)
 {
-	int			save_errno = SOCK_ERRNO;
-	SOCKETFD		tmpsock = -1;
-	struct
-	{
-		uint32		packetlen;
-		CancelRequestPacket cp;
-	}			crp;
-	BOOL	ret = TRUE;
 	SocketClass	*sock;
-	struct sockaddr *sadr;
 
 	/* Check we have an open connection */
 	if (!conn)
@@ -3661,56 +3012,7 @@ CC_send_cancel_request(const ConnectionClass *conn)
 	if (!sock)
 		return FALSE;
 
-#ifdef USE_LIBPQ
-	if (sock->via_libpq)
-		return LIBPQ_send_cancel_request(conn);
-#endif /* USE_LIBPQ */
-	/*
-	 * We need to open a temporary connection to the postmaster. Use the
-	 * information saved by connectDB to do this with only kernel calls.
-	*/
-	sadr = (struct sockaddr *) &(sock->sadr_area);
-	if ((tmpsock = socket(sadr->sa_family, SOCK_STREAM, 0)) < 0)
-	{
-		return FALSE;
-	}
-	if (connect(tmpsock, sadr, sock->sadr_len) < 0)
-	{
-		closesocket(tmpsock);
-		return FALSE;
-	}
-
-	/*
-	 * We needn't set nonblocking I/O or NODELAY options here.
-	 */
-	crp.packetlen = htonl((uint32) sizeof(crp));
-	crp.cp.cancelRequestCode = (MsgType) htonl(CANCEL_REQUEST_CODE);
-	crp.cp.backendPID = htonl(conn->be_pid);
-	crp.cp.cancelAuthCode = htonl(conn->be_key);
-
-	while (send(tmpsock, (char *) &crp, sizeof(crp), SEND_FLAG) != (int) sizeof(crp))
-	{
-		if (SOCK_ERRNO != EINTR)
-		{
-			save_errno = SOCK_ERRNO;
-			ret = FALSE;
-			break;
-		}
-	}
-	if (ret)
-	{
-		while (recv(tmpsock, (char *) &crp, 1, RECV_FLAG) < 0)
-		{
-			if (EINTR != SOCK_ERRNO)
-				break;
-		}
-	}
-
-	/* Sent it, done */
-	closesocket(tmpsock);
-	SOCK_ERRNO_SET(save_errno);
-
-	return ret;
+	return LIBPQ_send_cancel_request(conn);
 }
 
 int	CC_mark_a_object_to_discard(ConnectionClass *conn, int type, const char *plan)
@@ -3753,7 +3055,6 @@ int	CC_discard_marked_objects(ConnectionClass *conn)
 	return 1;
 }
 
-#ifdef USE_LIBPQ
 static int
 LIBPQ_connect(ConnectionClass *self)
 {
@@ -3805,7 +3106,6 @@ inolog("sock=%p\n", sock);
 		CC_set_error(self, CONN_UNABLE_TO_LOAD_DLL, "Couldn't load libpq library", func);
 		goto cleanup1;
 	}
-	sock->via_libpq = TRUE;
 	if (!pqconn)
 	{
 		CC_set_error(self, CONN_OPENDB_ERROR, "PQconnectdb error", func);
@@ -3930,7 +3230,6 @@ LIBPQ_send_cancel_request(const ConnectionClass *conn)
 	else
 		return FALSE;
 }
-#endif /* USE_LIBPQ */
 
 const char *CurrCat(const ConnectionClass *conn)
 {
@@ -4028,16 +3327,10 @@ DLL_DECLARE void PgDtc_create_connect_string(void *self, char *connstr, int strs
 	snprintf(connstr, strsize, "DRIVER={%s};"
 				"%s"
 				"SERVER=%s;PORT=%s;DATABASE=%s;UID=%s;PWD=%s;" ABBR_SSLMODE "=%s"
-#ifdef	USE_LIBPQ
-		";" ABBR_PREFERLIBPQ "=%d"
-#endif /* USE_LIBPQ */
 		,
 
 		drivername, xaOptStr
 		, ci->server, ci->port, ci->database, ci->username, SAFE_NAME(ci->password), ci->sslmode
-#ifdef	USE_LIBPQ
-		, (CC_get_socket(conn))->via_libpq
-#endif /* USE_LIBPQ */
 		);
 	return;
 }
@@ -4084,13 +3377,10 @@ DLL_DECLARE int PgDtc_is_recovery_available(void *self, char *reason, int rsize)
 	 *	There seems no way to check it.
 	 */
 	doubtCert = FALSE;
-#ifdef	USE_LIBPQ
 #ifdef	USE_SSL
-	if (sock->via_libpq &&
-	    NULL != sock->ssl)
+	if (NULL != sock->ssl)
 		doubtCert = TRUE;
 #endif /* USE_SSL */
-#endif /* USE_LIBPQ */
 #ifdef	USE_SSPI
 	if (0 != (sock->sspisvcs & SchannelService))
 		doubtCert = TRUE;
@@ -4108,8 +3398,6 @@ DLL_DECLARE int PgDtc_is_recovery_available(void *self, char *reason, int rsize)
 		return 0;
 	}
 #endif	/* USE_SSPI */
-#ifdef	USE_LIBPQ
-	if (sock->via_libpq)
 	{
 		nameSize = sizeof(loginUser);
 		if (GetUserNameEx(NameUserPrincipal, loginUser, &nameSize))
@@ -4138,7 +3426,6 @@ DLL_DECLARE int PgDtc_is_recovery_available(void *self, char *reason, int rsize)
 			}
 		}
 	}
-#endif /* USE_LIBPQ */
 
 	ret = 1;
 	if (outReason)

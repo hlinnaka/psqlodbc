@@ -168,10 +168,7 @@ struct SocketClass_
 	/* SSL stuff */
 	void		*ssl;		/* libpq ssl */
 #endif /* USE_SSL */
-#ifdef	USE_LIBPQ
 	void		*pqconn;	/* libpq PGConn */
-	BOOL		via_libpq;	/* using libpq library ? */
-#endif /* USE_LIBPQ */
 #ifdef	USE_GSS
 	gss_ctx_id_t	gctx;		/* GSS context */
 	gss_name_t	gtarg_nam;	/* GSS target name */

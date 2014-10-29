@@ -20,12 +20,10 @@
 #ifdef	USE_GSS
 #include "gsssvcs.h"
 #endif /* USE_GSS */
-#ifdef USE_LIBPQ
 #include <libpq-fe.h>
 #ifdef USE_SSL
 #include <openssl/ssl.h>
 #endif /* USE_SSL */
-#endif /* USE_LIBPQ */
 #include "misc.h"
 #include "loadlib.h"
 
@@ -85,13 +83,10 @@ SOCK_Constructor(const ConnectionClass *conn)
 		rv->gctx = NULL;
 		rv->gtarg_nam = NULL;
 #endif /* USE_GSS */
-#ifdef USE_LIBPQ
-		rv->via_libpq = FALSE;
 #ifdef USE_SSL
 		rv->ssl = NULL;
 #endif
 		rv->pqconn = NULL;
-#endif /* USE_LIBPQ */
 		rv->pversion = 0;
 		rv->reslen = 0;
 		rv->buffer_filled_in = 0;
@@ -138,42 +133,14 @@ SOCK_Destructor(SocketClass *self)
 	mylog("SOCK_Destructor\n");
 	if (!self)
 		return;
-#ifdef USE_LIBPQ
 	if (self->pqconn)
 	{
-		if (self->via_libpq)
-		{
-			PQfinish(self->pqconn);
-			/* UnloadDelayLoadedDLLs(NULL != self->ssl); */
-		}
-		self->via_libpq = FALSE;
+		PQfinish(self->pqconn);
+		/* UnloadDelayLoadedDLLs(NULL != self->ssl); */
 		self->pqconn = NULL;
 #ifdef USE_SSL
 		self->ssl = NULL;
 #endif
-	}
-	else
-#endif /* USE_LIBPQ */
-	{
-		if (self->socket != (SOCKETFD) -1)
-		{
-			SOCK_put_char(self, 'X');
-			SOCK_put_int(self, 4, 4);
-			SOCK_flush_output(self);
-			closesocket(self->socket);
-		}
-#ifdef	USE_SSPI
-		if (self->ssd)
-		{
-			ReleaseSvcSpecData(self, (UInt4) -1);
-			free(self->ssd);
-			self->ssd = NULL;
-		}
-		self->sspisvcs = 0;
-#endif /* USE_SSPI */
-#ifdef	USE_GSS
-		pg_GSS_cleanup(self);
-#endif /* USE_GSS */
 	}
 
 	if (self->buffer_in)

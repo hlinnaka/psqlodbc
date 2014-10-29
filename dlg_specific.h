@@ -152,8 +152,11 @@ extern "C" {
 #define INI_KEEPALIVEINTERVAL		"KeepaliveInterval"
 #define ABBR_KEEPALIVEINTERVAL		"D2"
 #define INI_DTCLOG			"Dtclog"
+/* "PreferLibpq", abbreviated "D4", used to mean whether to prefer libpq.
+ * libpq is now required
 #define INI_PREFERLIBPQ			"PreferLibpq"
 #define ABBR_PREFERLIBPQ		"D3"
+*/
 #define ABBR_XAOPT			"D4"
 
 #define	SSLMODE_DISABLE		"disable"
