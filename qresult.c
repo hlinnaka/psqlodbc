@@ -19,12 +19,16 @@
 #include "qresult.h"
 #include "statement.h"
 
+#include <libpq-fe.h>
+
 #include "misc.h"
 #include <stdio.h>
 #include <string.h>
 #include <limits.h>
 
+static BOOL QR_prepare_for_tupledata(QResultClass *self);
 static char QR_read_a_tuple_from_db(QResultClass *, char);
+static BOOL QR_read_tuples_from_pgres(QResultClass *, PGresult *pgres);
 
 /*
  *	Used for building a Manual Result only
@@ -573,6 +577,121 @@ QR_free_memory(QResultClass *self)
 }
 
 
+BOOL
+QR_from_PGresult(QResultClass *self, StatementClass *stmt, ConnectionClass *conn, const char *cursor, PGresult *pgres)
+{
+	CSTR func = "QR_from_PGResult";
+	int		num_io_params;
+	int		i;
+	Int2		paramType;
+	IPDFields	*ipdopts;
+
+	/* First, get column information */
+
+	QR_set_conn(self, conn);
+	{
+		Int2		lf;
+		int			new_num_fields;
+		OID			new_adtid, new_relid = 0, new_attid = 0;
+		Int2		new_adtsize;
+		Int4		new_atttypmod = -1;
+		char	   *new_field_name;
+		Int2		dummy1, dummy2;
+		int			cidx;
+
+	/* at first read in the number of fields that are in the query */
+		new_num_fields = PQnfields(pgres);
+		mylog("num_fields = %d\n", new_num_fields);
+
+		/* according to that allocate memory */
+		QR_set_num_fields(self, new_num_fields);
+		if (NULL == QR_get_fields(self)->coli_array)
+			return FALSE;
+
+		/* now read in the descriptions */
+		for (lf = 0; lf < new_num_fields; lf++)
+		{
+			new_field_name = PQfname(pgres, lf);
+			new_relid = PQftable(pgres, lf);
+			new_attid = PQftablecol(pgres, lf);
+			new_adtid = (OID) PQftype(pgres, lf);
+			new_adtsize = (Int2) PQfsize(pgres, lf);
+			new_atttypmod = (Int4) PQfmod(pgres, lf);
+
+			/* Subtract the header length */
+			switch (new_adtid)
+			{
+				case PG_TYPE_DATETIME:
+				case PG_TYPE_TIMESTAMP_NO_TMZONE:
+				case PG_TYPE_TIME:
+				case PG_TYPE_TIME_WITH_TMZONE:
+					break;
+				default:
+					new_atttypmod -= 4;
+			}
+			if (new_atttypmod < 0)
+				new_atttypmod = -1;
+
+			mylog("%s: fieldname='%s', adtid=%d, adtsize=%d, atttypmod=%d (rel,att)=(%d,%d)\n", func, new_field_name, new_adtid, new_adtsize, new_atttypmod, new_relid, new_attid);
+
+			CI_set_field_info(QR_get_fields(self), lf, new_field_name, new_adtid, new_adtsize, new_atttypmod, new_relid, new_attid);
+
+			QR_set_rstatus(self, PORES_FIELDS_OK);
+			self->num_fields = CI_get_num_fields(QR_get_fields(self));
+			if (QR_haskeyset(self))
+				self->num_fields -= self->num_key_fields;
+			if (stmt)
+			{
+				num_io_params = CountParameters(stmt, NULL, &dummy1, &dummy2);
+				if (stmt->proc_return > 0 ||
+					num_io_params > 0)
+				{
+					ipdopts = SC_get_IPDF(stmt);
+					extend_iparameter_bindings(ipdopts, stmt->num_params);
+					for (i = 0, cidx = 0; i < stmt->num_params; i++)
+					{
+						if (i < stmt->proc_return)
+							ipdopts->parameters[i].paramType = SQL_PARAM_OUTPUT;
+						paramType =ipdopts->parameters[i].paramType;
+						if (SQL_PARAM_OUTPUT == paramType ||
+							SQL_PARAM_INPUT_OUTPUT == paramType)
+						{
+inolog("!![%d].PGType %u->%u\n", i, PIC_get_pgtype(ipdopts->parameters[i]), CI_get_oid(QR_get_fields(self), cidx));
+							PIC_set_pgtype(ipdopts->parameters[i], CI_get_oid(QR_get_fields(self), cidx));
+							cidx++;
+						}
+					}
+				}
+			}
+		}
+	}
+
+
+	/* Then, get the data itself */
+	if (!QR_read_tuples_from_pgres(self, pgres))
+		return FALSE;
+inolog("!!%p->cursTup=%d total_read=%d\n", self, self->cursTuple, self->num_total_read);
+	if (!QR_once_reached_eof(self) && self->cursTuple >= (Int4) self->num_total_read)
+		self->num_total_read = self->cursTuple + 1;
+
+	/* Force a read to occur in next_tuple */
+	QR_set_next_in_cache(self, 0);
+	QR_set_rowstart_in_cache(self, 0);
+	self->key_base = 0;
+
+	if (QR_is_fetching_tuples(self))
+		QR_set_reached_eof(self);
+
+	/*
+	 * Also fill in command tag. (Typically, it's SELECT, but can also be
+	 * a FETCH.)
+	 */
+	QR_set_command(self, PQcmdStatus(pgres));
+	QR_set_cursor(self, cursor);
+	return TRUE;
+}
+
+
 /*	This function is called by send_query() */
 char
 QR_fetch_tuples(QResultClass *self, ConnectionClass *conn, const char *cursor, int *LastMessageType)
@@ -781,9 +900,11 @@ QR_close(QResultClass *self)
 	return ret;
 }
 
-
-BOOL
-QR_get_tupledata(QResultClass *self, BOOL binary)
+/*
+ * Allocate memory for receiving next tuple.
+ */
+static BOOL
+QR_prepare_for_tupledata(QResultClass *self)
 {
 	BOOL	haskeyset = QR_haskeyset(self);
 	SQLULEN num_total_rows = QR_get_num_total_tuples(self);
@@ -818,6 +939,14 @@ inolog("QR_get_tupledata %p->num_fields=%d\n", self, self->num_fields);
 			self->count_keyset_allocated = tuple_size;
 		}
 	}
+	return TRUE;
+}
+
+BOOL
+QR_get_tupledata(QResultClass *self, BOOL binary)
+{
+	if (!QR_prepare_for_tupledata(self))
+		return FALSE;
 
 	if (!QR_read_a_tuple_from_db(self, (char) binary))
 	{
@@ -836,7 +965,7 @@ inolog("!!cursTup=%d total_read=%d\n", self->cursTuple, self->num_total_read);
 	{
 		QR_inc_num_cache(self);
 	}
-	else if (haskeyset)
+	else if (QR_haskeyset(self))
 		self->num_cached_keys++;
 
 	return TRUE;
@@ -1671,5 +1800,128 @@ else
 		}
 	}
 	self->cursTuple++;
+	return TRUE;
+}
+
+
+static BOOL
+QR_read_tuples_from_pgres(QResultClass *self, PGresult *pgres)
+{
+	Int2		field_lf;
+	int			len;
+	char	   *value;
+	char	   *buffer;
+	int		ci_num_fields = QR_NumResultCols(self);	/* speed up access */
+	int		num_fields = self->num_fields;	/* speed up access */
+	ColumnInfoClass *flds;
+	int		effective_cols;
+	char		tidoidbuf[32];
+	int			rowno;
+	int			nrows;
+
+	/* set the current row to read the fields into */
+	effective_cols = QR_NumPublicResultCols(self);
+
+	flds = QR_get_fields(self);
+
+	nrows = PQntuples(pgres);
+
+	for (rowno = 0; rowno < nrows; rowno++)
+	{
+		TupleField *this_tuplefield;
+		KeySet	*this_keyset = NULL;
+
+		if (!QR_prepare_for_tupledata(self))
+			return FALSE;
+
+		this_tuplefield = self->backend_tuples + (self->num_cached_rows * num_fields);
+		if (QR_haskeyset(self))
+		{
+			/* this_keyset = self->keyset + self->cursTuple + 1; */
+			this_keyset = self->keyset + self->num_cached_keys;
+			this_keyset->status = 0;
+		}
+
+		for (field_lf = 0; field_lf < ci_num_fields; field_lf++)
+		{
+			BOOL isnull = FALSE;
+
+			isnull = PQgetisnull(pgres, rowno, field_lf);
+
+			if (isnull)
+			{
+				this_tuplefield[field_lf].len = 0;
+				this_tuplefield[field_lf].value = 0;
+				continue;
+			}
+			else
+			{
+				len = PQgetlength(pgres, rowno, field_lf);
+				value = PQgetvalue(pgres, rowno, field_lf);
+				if (field_lf >= effective_cols)
+					buffer = tidoidbuf;
+				else
+				{
+					QR_MALLOC_return_with_error(buffer, char, len + 1, self, "Out of memory in allocating item buffer.", FALSE);
+				}
+				memcpy(buffer, value, len);
+				buffer[len] = '\0';
+
+				mylog("qresult: len=%d, buffer='%s'\n", len, buffer);
+
+				if (field_lf >= effective_cols)
+				{
+					if (NULL == this_keyset)
+					{
+						char	emsg[128];
+
+						QR_set_rstatus(self, PORES_INTERNAL_ERROR);
+						snprintf(emsg, sizeof(emsg), "Internal Error -- this_keyset == NULL ci_num_fields=%d effective_cols=%d", ci_num_fields, effective_cols);
+						QR_set_message(self, emsg);
+						return FALSE;
+					}
+					if (field_lf == effective_cols)
+						sscanf(buffer, "(%u,%hu)",
+							   &this_keyset->blocknum, &this_keyset->offset);
+					else
+						this_keyset->oid = strtoul(buffer, NULL, 10);
+				}
+				else
+				{
+					this_tuplefield[field_lf].len = len;
+					this_tuplefield[field_lf].value = buffer;
+
+					/*
+					 * This can be used to set the longest length of the column
+					 * for any row in the tuple cache.	It would not be accurate
+					 * for varchar and text fields to use this since a tuple cache
+					 * is only 100 rows. Bpchar can be handled since the strlen of
+					 * all rows is fixed, assuming there are not 100 nulls in a
+					 * row!
+					 */
+
+					if (flds && flds->coli_array && CI_get_display_size(flds, field_lf) < len)
+						CI_get_display_size(flds, field_lf) = len;
+				}
+			}
+		}
+		self->cursTuple++;
+		if (self->num_fields > 0)
+		{
+			QR_inc_num_cache(self);
+		}
+		else if (QR_haskeyset(self))
+			self->num_cached_keys++;
+
+		if (self->cursTuple >= self->num_total_read)
+			self->num_total_read = self->cursTuple + 1;
+	}
+
+	self->dataFilled = TRUE;
+	self->tupleField = self->backend_tuples + (self->fetch_number * self->num_fields);
+inolog("tupleField=%p\n", self->tupleField);
+
+	QR_set_rstatus(self, PORES_TUPLES_OK);
+
 	return TRUE;
 }

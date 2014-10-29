@@ -21,6 +21,14 @@
 
 #include "connection.h"
 #include <libpq-fe.h>
+
+#ifdef WIN32
+#define PG_PRINTF_ATTRIBUTE gnu_printf
+#else
+#define PG_PRINTF_ATTRIBUTE printf
+#endif
+#include "internal/pqexpbuffer.h" /* for pqexpbuffer.h */
+
 #include "misc.h"
 
 #include <stdio.h>
@@ -60,6 +68,8 @@
 static void CC_lookup_lo(ConnectionClass *self);
 static char *CC_create_errormsg(ConnectionClass *self);
 static int  CC_close_eof_cursors(ConnectionClass *self);
+
+static void LIBPQ_update_transaction_status(ConnectionClass *self);
 
 extern GLOBAL_VALUES globals;
 
@@ -855,6 +865,121 @@ EatReadyForQuery(ConnectionClass *conn)
 	conn->stmt_in_extquery = NULL;
 
 	return id;
+}
+
+void
+handle_pgres_error(ConnectionClass *self, const PGresult *pgres,
+				   const char *comment,
+				   QResultClass *res, BOOL fatal)
+{
+	UDWORD		abort_opt;
+	char	   *errseverity;
+	char	   *errprimary;
+	char	   *errmsg = NULL;
+	size_t		errmsglen;
+
+	inolog("handle_pgres_error");
+
+	if (res)
+	{
+		char *sqlstate = PQresultErrorField(pgres, PG_DIAG_SQLSTATE);
+		if (sqlstate)
+			strncpy_null(res->sqlstate, sqlstate, sizeof(res->sqlstate));
+	}
+
+	/*
+	 * The full message with details and context and everything could
+	 * be obtained with PQresultErrorMessage(). I think that would be
+	 * more user-friendly, but for now, construct a message with
+	 * severity and primary message, which is backwards compatible.
+	 */
+	errseverity = PQresultErrorField(pgres, PG_DIAG_SEVERITY);
+	errprimary = PQresultErrorField(pgres, PG_DIAG_MESSAGE_PRIMARY);
+	if (errprimary == NULL)
+	{
+		/* Hmm. got no primary message. Check if there's a connection error */
+		if (self->sock && self->sock->pqconn)
+			errprimary = PQerrorMessage(self->sock->pqconn);
+
+		if (errprimary == NULL)
+			errprimary = "no error information";
+	}
+	if (errseverity && errprimary)
+	{
+		errmsglen = strlen(errseverity) + 2 + strlen(errprimary) + 1;
+		errmsg = malloc(errmsglen);
+		if (errmsg)
+		{
+			snprintf(errmsg, errmsglen, "%s: %s", errseverity, errprimary);
+		}
+	}
+	if (errmsg == NULL)
+		errmsg = errprimary;
+
+	abort_opt = 0;
+
+	if (PQstatus(self->sock->pqconn) == CONNECTION_BAD)
+	{
+		CC_set_errornumber(self, CONNECTION_SERVER_REPORTED_ERROR);
+		abort_opt = CONN_DEAD;
+	}
+	else
+	{
+		CC_set_errornumber(self, CONNECTION_SERVER_REPORTED_WARNING);
+		if (CC_is_in_trans(self))
+			CC_set_in_error_trans(self);
+	}
+
+	mylog("notice/error message len=%d\n", strlen(errmsg));
+
+	if (0 != abort_opt
+#ifdef	_LEGACY_MODE_
+		|| TRUE
+#endif /* _LEGACY_NODE_ */
+		)
+		CC_on_abort(self, abort_opt);
+
+	if (fatal)
+	{
+		if (res)
+		{
+			QR_set_rstatus(res, PORES_FATAL_ERROR);
+			QR_set_message(res, errmsg);
+			QR_set_aborted(res, TRUE);
+		}
+	}
+	else
+	{
+		if (res)
+		{
+			if (QR_command_successful(res))
+				QR_set_rstatus(res, PORES_NONFATAL_ERROR);
+			QR_set_notice(res, errmsg);  /* will dup this string */
+		}
+	}
+	if (errmsg != errprimary)
+		free(errmsg);
+}
+
+typedef struct
+{
+	ConnectionClass *conn;
+	const char *comment;
+	QResultClass *res;
+} notice_receiver_arg;
+
+/*
+ * This is a libpq notice receiver callback.
+ */
+void
+receive_libpq_notice(void *arg, const PGresult *pgres)
+{
+	if (arg != NULL)
+	{
+		notice_receiver_arg *nrarg = (notice_receiver_arg *) arg;
+
+		handle_pgres_error(nrarg->conn, pgres, nrarg->comment, nrarg->res, FALSE);
+	}
 }
 
 int
@@ -1894,15 +2019,14 @@ is_setting_search_path(const char *query)
 	return FALSE;
 }
 
-BOOL static
-CC_fetch_tuples(QResultClass *res, ConnectionClass *conn, const char *cursor, BOOL *ReadyToReturn, BOOL *kill_conn)
+static BOOL
+CC_from_PGresult(QResultClass *res, StatementClass *stmt, ConnectionClass *conn, const char *cursor, PGresult *pgres)
 {
 	BOOL	success = TRUE;
-	int	lastMessageType;
 
-	if (!QR_fetch_tuples(res, conn, cursor, &lastMessageType))
+	if (!QR_from_PGresult(res, stmt, conn, cursor, pgres))
 	{
-		qlog("fetch_tuples failed lastMessageType=%02x\n", lastMessageType);
+		qlog("getting result from PGresult failed\n");
 		success = FALSE;
 		if (0 >= CC_get_errornumber(conn))
 		{
@@ -1919,22 +2043,6 @@ CC_fetch_tuples(QResultClass *res, ConnectionClass *conn, const char *cursor, BO
 					break;
 			}
 		}
-		switch (lastMessageType)
-		{
-			case 'Z':
-				if (ReadyToReturn)
-					*ReadyToReturn = TRUE;
-				break;
-			case 'C':
-			case 'E':
-				break;
-			default:
-				if (ReadyToReturn)
-					*ReadyToReturn = TRUE;
-				if (kill_conn)
-					*kill_conn = TRUE;
-				break;
-		}
 	}
 	return success;
 }
@@ -1947,6 +2055,12 @@ CC_fetch_tuples(QResultClass *res, ConnectionClass *conn, const char *cursor, BO
  *	The "cursor" is used by SQLExecute to associate a statement handle as the cursor name
  *	(i.e., C3326857) for SQL select statements.  This cursor is then used in future
  *	'declare cursor C3326857 for ...' and 'fetch 100 in C3326857' statements.
+ *
+ * * If issue_begin, send "BEGIN"
+ * * if needed, send "SAVEPOINT ..."
+ * * Send "query", read result
+ * * Send appendq, read result.
+ *
  */
 QResultClass *
 CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UDWORD flag, StatementClass *stmt, const char *appendq)
@@ -1960,12 +2074,7 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 		issue_begin = ((flag & GO_INTO_TRANSACTION) != 0 && !CC_is_in_trans(self)),
 		rollback_on_error, query_rollback, end_with_commit;
 
-	const char	*wq;
-	char		swallow, *ptr;
-	size_t	qrylen;
-	int			id;
-	SocketClass *sock = self->sock;
-	int			empty_reqs;
+	char		*ptr;
 	BOOL		ReadyToReturn = FALSE,
 				query_completed = FALSE,
 				aborted = FALSE,
@@ -1974,16 +2083,14 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 			kill_conn = FALSE,
 			discard_next_savepoint = FALSE,
 			consider_rollback;
-	Int4		response_length;
-	UInt4		leng;
 	int		func_cs_count = 0;
-
-	/* ERROR_MSG_LENGTH is suffcient */
-	char msgbuffer[ERROR_MSG_LENGTH + 1];
+	PQExpBufferData query_buf;
 
 	/* QR_set_command() dups this string so doesn't need static */
-	char		cmdbuffer[ERROR_MSG_LENGTH + 1];
+	char	   *cmdbuffer;
 	BOOL		reduce_round_trip_time = !(flag & IGNORE_ROUND_TRIP);
+	PGresult   *pgres;
+	notice_receiver_arg nrarg;
 
 	if (appendq)
 	{
@@ -2014,9 +2121,7 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 			return NULL;
 		}
 	}
-	/* Indicate that we are sending a query to the backend */
-	qrylen = strlen(query);
-
+/* Indicate that we are sending a query to the backend */
 	if ((NULL == query) || (query[0] == '\0'))
 	{
 		CLEANUP_FUNC_CONN_CS(func_cs_count, self);
@@ -2077,72 +2182,41 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 		}
 	}
 
-	SOCK_put_char(self->sock, 'Q');
-	if (SOCK_get_errcode(self->sock) != 0)
-	{
-		CC_set_error(self, CONNECTION_COULD_NOT_SEND, "Could not send Query to backend", func);
-		goto cleanup;
-	}
-	if (stmt)
-		SC_forget_unnamed(stmt);
-
-	leng = (UInt4) qrylen;
-	if (appendq)
-		leng += (UInt4) (strlen(appendq) + 1);
-	if (issue_begin)
-		leng += (UInt4) (strlen(bgncmd) + 1);
-	if (query_rollback)
-	{
-		leng += (UInt4) (strlen(svpcmd) + 1 + strlen(per_query_svp) + 1);
-		leng += (UInt4) (1 + strlen(rlscmd) + 1 + strlen(per_query_svp));
-	}
-	leng++;
-	SOCK_put_int(sock, leng + 4, 4);
-inolog("leng=%d\n", leng);
-
+	/* XXX: append all these together, to avoid round-trips */
+	initPQExpBuffer(&query_buf);
 	if (issue_begin)
 	{
-		SOCK_put_n_char(self->sock, bgncmd, strlen(bgncmd));
-		SOCK_put_n_char(self->sock, ";", 1);
+		appendPQExpBufferStr(&query_buf, bgncmd);
+		appendPQExpBufferChar(&query_buf, ';');
 		discard_next_begin = TRUE;
 	}
 	if (query_rollback)
 	{
-		char cmd[64];
-
-		snprintf(cmd, sizeof(cmd), "%s %s;", svpcmd, per_query_svp);
-		SOCK_put_n_char(self->sock, cmd, strlen(cmd));
+		appendPQExpBuffer(&query_buf, "%s %s;", svpcmd, per_query_svp);
 		discard_next_savepoint = TRUE;
 	}
-	SOCK_put_n_char(self->sock, query, qrylen);
+	appendPQExpBufferStr(&query_buf, query);
 	if (appendq)
 	{
-		SOCK_put_n_char(self->sock, ";", 1);
-		SOCK_put_n_char(self->sock, appendq, strlen(appendq));
+		appendPQExpBufferChar(&query_buf, ';');
+		appendPQExpBufferStr(&query_buf, appendq);
 	}
 	if (query_rollback)
-	{
-		char cmd[64];
+		appendPQExpBuffer(&query_buf, ";%s %s", rlscmd, per_query_svp);
 
-		snprintf(cmd, sizeof(cmd), ";%s %s", rlscmd, per_query_svp);
-		SOCK_put_n_char(self->sock, cmd, strlen(cmd));
-	}
-	SOCK_put_n_char(self->sock, NULL_STRING, 1);
-	leng = SOCK_flush_output(self->sock);
+	/* Set up notice receiver */
+	nrarg.conn = self;
+	nrarg.comment = func;
+	nrarg.res = NULL;
+	PQsetNoticeReceiver(self->sock->pqconn, receive_libpq_notice, &nrarg);
 
-	if (SOCK_get_errcode(self->sock) != 0)
+	if(!PQsendQuery(self->sock->pqconn, query_buf.data))
 	{
-		CC_set_error(self, CONNECTION_COULD_NOT_SEND, "Could not send Query to backend", func);
+		char *errmsg = PQerrorMessage(self->sock->pqconn);
+		CC_set_error(self, CONNECTION_SERVER_NOT_REACHED, errmsg, func);
 		goto cleanup;
 	}
 
-	mylog("send_query: done sending query %dbytes flushed\n", leng);
-
-	empty_reqs = 0;
-	for (wq = query; isspace((UCHAR) *wq); wq++)
-		;
-	if (*wq == '\0')
-		empty_reqs = 1;
 	cmdres = qi ? qi->result_in : NULL;
 	if (cmdres)
 		used_passed_result_object = TRUE;
@@ -2156,162 +2230,100 @@ inolog("leng=%d\n", leng);
 		}
 	}
 	res = cmdres;
-	while (!ReadyToReturn)
+	nrarg.res = res;
+
+	while (self->sock && (pgres = PQgetResult(self->sock->pqconn)) != NULL)
 	{
-		/* what type of message is coming now ? */
-		id = SOCK_get_id(self->sock);
-
-		if ((SOCK_get_errcode(self->sock) != 0) || (id == EOF))
+		int status = PQresultStatus(pgres);
+		switch (status)
 		{
-			CC_set_error(self, CONNECTION_NO_RESPONSE, "No response from the backend", func);
-
-			mylog("send_query: 'id' - %s\n", CC_get_errormsg(self));
-			kill_conn = TRUE;
-			break;
-		}
-
-		mylog("send_query: got id = '%c'\n", id);
-
-		response_length = SOCK_get_response_length(self->sock);
-inolog("send_query response_length=%d\n", response_length);
-		switch (id)
-		{
-			case 'A':			/* Asynchronous Messages are ignored */
-				(void) SOCK_get_int(self->sock, 4);	/* id of notification */
-				SOCK_get_string(self->sock, msgbuffer, ERROR_MSG_LENGTH);
-				/* name of the relation the message comes from */
-				break;
-			case 'C':			/* portal query command, no tuples
-								 * returned */
+			case PGRES_COMMAND_OK:
+				/* portal query command, no tuples returned */
 				/* read in the return message from the backend */
-				SOCK_get_string(self->sock, cmdbuffer, ERROR_MSG_LENGTH);
-				if (SOCK_get_errcode(self->sock) != 0)
+				cmdbuffer = PQcmdStatus(pgres);
+				mylog("send_query: ok - 'C' - %s\n", cmdbuffer);
+
+				if (query_completed)	/* allow for "show" style notices */
 				{
-					CC_set_error(self, CONNECTION_NO_RESPONSE, "No response from backend while receiving a portal query command", func);
-					mylog("send_query: 'C' - %s\n", CC_get_errormsg(self));
-					ReadyToReturn = TRUE;
+					res->next = QR_Constructor();
+					res = res->next;
+					nrarg.res = res;
 				}
-				else
+
+				mylog("send_query: setting cmdbuffer = '%s'\n", cmdbuffer);
+
+				my_trim(cmdbuffer); /* get rid of trailing space */
+				if (strnicmp(cmdbuffer, bgncmd, strlen(bgncmd)) == 0)
 				{
-					mylog("send_query: ok - 'C' - %s\n", cmdbuffer);
-
-					if (query_completed)	/* allow for "show" style notices */
+					CC_set_in_trans(self);
+					if (discard_next_begin) /* discard the automatically issued BEGIN */
 					{
-						res->next = QR_Constructor();
-						res = res->next;
+						discard_next_begin = FALSE;
+						continue; /* discard the result */
 					}
-
-					mylog("send_query: setting cmdbuffer = '%s'\n", cmdbuffer);
-
-					my_trim(cmdbuffer); /* get rid of trailing space */
-					if (strnicmp(cmdbuffer, bgncmd, strlen(bgncmd)) == 0)
+				}
+				else if (strnicmp(cmdbuffer, svpcmd, strlen(svpcmd)) == 0)
+				{
+					if (discard_next_savepoint)
 					{
-						CC_set_in_trans(self);
-						if (discard_next_begin) /* discard the automatically issued BEGIN */
-						{
-							discard_next_begin = FALSE;
-							continue; /* discard the result */
-						}
-					}
-					else if (strnicmp(cmdbuffer, svpcmd, strlen(svpcmd)) == 0)
-					{
-						if (discard_next_savepoint)
-						{
 inolog("Discarded the first SAVEPOINT\n");
-							discard_next_savepoint = FALSE;
-							continue; /* discard the result */
-						}
+						discard_next_savepoint = FALSE;
+						continue; /* discard the result */
 					}
-					else if (strnicmp(cmdbuffer, rbkcmd, strlen(rbkcmd)) == 0)
-					{
-						CC_mark_cursors_doubtful(self);
-						CC_set_in_error_trans(self); /* mark the transaction error in case of manual rollback */
-					}
-					/*
-					 *	DROP TABLE or ALTER TABLE may change
-					 *	the table definition. So clear the
-					 *	col_info cache though it may be too simple.
-					 */
-					else if (strnicmp(cmdbuffer, "DROP TABLE", 10) == 0 ||
+				}
+				else if (strnicmp(cmdbuffer, rbkcmd, strlen(rbkcmd)) == 0)
+				{
+					CC_mark_cursors_doubtful(self);
+					CC_set_in_error_trans(self); /* mark the transaction error in case of manual rollback */
+				}
+				/*
+				 *	DROP TABLE or ALTER TABLE may change
+				 *	the table definition. So clear the
+				 *	col_info cache though it may be too simple.
+				 */
+				else if (strnicmp(cmdbuffer, "DROP TABLE", 10) == 0 ||
 						 strnicmp(cmdbuffer, "ALTER TABLE", 11) == 0)
-						CC_clear_col_info(self, FALSE);
+					CC_clear_col_info(self, FALSE);
+				else
+				{
+					ptr = strrchr(cmdbuffer, ' ');
+					if (ptr)
+						res->recent_processed_row_count = atoi(ptr + 1);
 					else
+						res->recent_processed_row_count = -1;
+					if (NULL != self->current_schema &&
+						strnicmp(cmdbuffer, "SET", 3) == 0)
 					{
-						ptr = strrchr(cmdbuffer, ' ');
-						if (ptr)
-							res->recent_processed_row_count = atoi(ptr + 1);
-						else
-							res->recent_processed_row_count = -1;
-						if (NULL != self->current_schema &&
-						    strnicmp(cmdbuffer, "SET", 3) == 0)
-						{
-							if (is_setting_search_path(query))
-								reset_current_schema(self);
-						}
+						if (is_setting_search_path(query))
+							reset_current_schema(self);
 					}
+				}
 
-					if (QR_command_successful(res))
-						QR_set_rstatus(res, PORES_COMMAND_OK);
-					QR_set_command(res, cmdbuffer);
-					query_completed = TRUE;
-					mylog("send_query: returning res = %p\n", res);
+				if (QR_command_successful(res))
+					QR_set_rstatus(res, PORES_COMMAND_OK);
+				QR_set_command(res, cmdbuffer);
+				query_completed = TRUE;
+				mylog("send_query: returning res = %p\n", res);
+				break;
 
-				}
+			case PGRES_EMPTY_QUERY:
+				/* We return the empty query */
+				QR_set_rstatus(res, PORES_EMPTY_QUERY);
 				break;
-			case 'Z':			/* Backend is ready for new query (6.4) */
-				if (empty_reqs == 0)
-				{
-					ReadyToReturn = TRUE;
-					if (aborted || query_completed)
-						retres = cmdres;
-					else
-						ReadyToReturn = FALSE;
-				}
-				EatReadyForQuery(self);
+			case PGRES_NONFATAL_ERROR:
+				handle_pgres_error(self, pgres, "send_query", res, FALSE);
 				break;
-			case 'N':			/* NOTICE: */
-				handle_notice_message(self, cmdbuffer, sizeof(cmdbuffer), res->sqlstate, "send_query", res);
-				break;		/* dont return a result -- continue
-								 * reading */
 
-			case 'I':			/* The server sends an empty query */
-				/* There is a closing '\0' following the 'I', so we eat it */
-				if (0 == response_length)
-					swallow = '\0';
-				else
-					swallow = SOCK_get_char(self->sock);
-				if ((swallow != '\0') || SOCK_get_errcode(self->sock) != 0)
-				{
-					CC_set_errornumber(self, CONNECTION_BACKEND_CRAZY);
-					QR_set_message(res, "Unexpected protocol character from backend (send_query - I)");
-					QR_set_rstatus(res, PORES_FATAL_ERROR);
-					kill_conn = TRUE;
-					ReadyToReturn = TRUE;
-					break;
-				}
-				else
-				{
-					/* We return the empty query */
-					QR_set_rstatus(res, PORES_EMPTY_QUERY);
-				}
-				if (empty_reqs > 0)
-				{
-					if (--empty_reqs == 0)
-						query_completed = TRUE;
-				}
-				else
-					query_completed = TRUE;
-				break;
-			case 'E':
-				handle_error_message(self, msgbuffer, sizeof(msgbuffer), res->sqlstate, "send_query", res);
+			case PGRES_BAD_RESPONSE:
+			case PGRES_FATAL_ERROR:
+				handle_pgres_error(self, pgres, "send_query", res, TRUE);
 
 				/* We should report that an error occured. Zoltan */
 				aborted = TRUE;
 
 				query_completed = TRUE;
 				break;
-
-			case 'T':			/* Tuple results start here */
+			case PGRES_TUPLES_OK:
 				if (query_completed)
 				{
 					res->next = QR_Constructor();
@@ -2330,6 +2342,7 @@ inolog("Discarded the first SAVEPOINT\n");
 					}
 					mylog("send_query: 'T' no result_in: res = %p\n", res->next);
 					res = res->next;
+					nrarg.res = res;
 
 					if (qi)
 						QR_set_cache_size(res, qi->row_size);
@@ -2345,7 +2358,7 @@ inolog("Discarded the first SAVEPOINT\n");
 						if (cursor && cursor[0])
 							QR_set_synchronize_keys(res);
 					}
-					if (!CC_fetch_tuples(res, self, cursor, &ReadyToReturn, &kill_conn))
+					if (!CC_from_PGresult(res, stmt, self, cursor, pgres))
 					{
 						if (QR_command_maybe_successful(res))
 							retres = NULL;
@@ -2362,114 +2375,34 @@ inolog("Discarded the first SAVEPOINT\n");
 					 * called from QR_next_tuple and must return
 					 * immediately.
 					 */
-					ReadyToReturn = TRUE;
-					if (!CC_fetch_tuples(res, NULL, NULL, &ReadyToReturn, &kill_conn))
+					if (!CC_from_PGresult(res, stmt, self, NULL, pgres))
 					{
 						retres = NULL;
 						break;
 					}
 					retres = cmdres;
 				}
-				break;
-			case 'G':			/* Copy in command began successfully */
+				if (res->rstatus == PORES_TUPLES_OK && res->notice)
 				{
-				size_t	alsize = 256, pos, len;
-				char *buf = malloc(alsize), *tmpbuf, tchar;
-
-				for (pos = 0; NULL != fgets(buf + pos, alsize - pos, stdin);)
-				{
-					len = strlen(buf);
-
-mylog("get copydata len=%d %02x%02x\n", len, ((UCHAR *) buf)[0], ((UCHAR *) buf)[1]);
-					tchar = buf[len - 1];
-					if ('\n' == tchar)
-					{
-						buf[len - 1] = '\0';
-						len--;
-					}
-					else
-					{
-						if (len >= alsize - 1)
-						{
-							if (tmpbuf = realloc(buf, alsize * 2), NULL == tmpbuf)
-							{
-								aborted = TRUE;
-								break;
-							}
-							else
-							{
-								buf = tmpbuf;
-								alsize *= 2;
-								pos = len;
-								continue;
-							}
-						}
-					}
-					SOCK_put_char(self->sock, 'd'); /* CopyData */
-					SOCK_put_int(self->sock, 4 + len, 4);
-					SOCK_put_n_char(self->sock, buf, len);
-					pos = 0;
-				}
-				if (aborted)
-				{
-mylog("copy fail\n");
-					SOCK_put_char(self->sock, 'f'); /* CopyFail */
-					SOCK_put_int(self->sock, 18, 4);
-					SOCK_put_string(self->sock, "Out of memory");
-				}
-				else
-				{
-mylog("copy done\n");
-					SOCK_put_char(self->sock, 'c'); /* CopyDone */
-					SOCK_put_int(self->sock, 4, 4);
-				}
-				SOCK_flush_output(self->sock);
-				free(buf);
+					QR_set_rstatus(res, PORES_NONFATAL_ERROR);
 				}
 				break;
-			case 'H':			/* Copy out command began successfully */
-				break;
-			case 'c':			/* Copy out command donesuccessfully */
-				fclose(stdout);
-				break;
-			case 'd':			/* CopyData comes */
-mylog("!!! copydata len=%d\n", response_length);
-				break;
-			case 'f':			/* CopyFail */
-				aborted = TRUE;
-				break;
-			case 'D':			/* Copy in command began successfully */
+			case PGRES_COPY_OUT:
+				/* XXX: We used to read from stdin here. Does that make any sense? */
+			case PGRES_COPY_IN:
 				if (query_completed)
 				{
 					res->next = QR_Constructor();
 					res = res->next;
+					nrarg.res = res;
 				}
 				QR_set_rstatus(res, PORES_COPY_IN);
 				ReadyToReturn = TRUE;
 				retres = cmdres;
 				break;
-			case 'B':			/* Copy out command began successfully */
-				if (query_completed)
-				{
-					res->next = QR_Constructor();
-					res = res->next;
-				}
-				QR_set_rstatus(res, PORES_COPY_OUT);
-				ReadyToReturn = TRUE;
-				retres = cmdres;
-				break;
-			case 'S':		/* parameter status */
-				getParameterValues(self);
-				break;
-			case 's':		/* portal suspended
-						 * may not occur */
-				QR_set_no_fetching_tuples(res);
-				res->dataFilled = TRUE;
-				break;
+			case PGRES_COPY_BOTH:
 			default:
 				/* skip the unexpected response if possible */
-				if (response_length >= 0)
-					break;
 				CC_set_error(self, CONNECTION_BACKEND_CRAZY, "Unexpected protocol character from backend (send_query)", func);
 				CC_on_abort(self, CONN_DEAD);
 
@@ -2478,14 +2411,11 @@ mylog("!!! copydata len=%d\n", response_length);
 				retres = NULL;
 				break;
 		}
-
-		if (SOCK_get_errcode(self->sock) != 0)
-			break;
-		if (CONN_DOWN == self->status)
-			break;
 	}
 
 cleanup:
+	if (self->sock)
+		PQsetNoticeReceiver(self->sock->pqconn, receive_libpq_notice, NULL);
 	if (SOCK_get_errcode(self->sock) != 0)
 	{
 		if (0 == CC_get_errornumber(self))
@@ -2499,21 +2429,18 @@ cleanup:
 	}
 	if (rollback_on_error && CC_is_in_trans(self) && !discard_next_savepoint)
 	{
-		char	cmd[64];
-
-		cmd[0] = '\0';
 		if (query_rollback)
 		{
 			if (CC_is_in_error_trans(self))
 			{
-				snprintf(cmd, sizeof(cmd), "%s TO %s;", rbkcmd, per_query_svp);
-				snprintf_add(cmd, sizeof(cmd), "%s %s", rlscmd, per_query_svp);
+				printfPQExpBuffer(&query_buf, "%s TO %s; %s %s",
+								  rbkcmd, per_query_svp,
+								  rlscmd, per_query_svp);
+				PQexec(self->sock->pqconn, query_buf.data);
 			}
 		}
 		else if (CC_is_in_error_trans(self))
-			strcpy(cmd, rbkcmd);
-		if (cmd[0])
-			QR_Destructor(CC_send_query(self, cmd, NULL, IGNORE_ABORT_ON_CONN, NULL));
+			PQexec(self->sock->pqconn, rbkcmd);
 	}
 
 	CLEANUP_FUNC_CONN_CS(func_cs_count, self);
@@ -2574,6 +2501,16 @@ cleanup:
 			}
 		}
 	}
+
+	/*
+	 * Update our copy of the transaction status.
+	 *
+	 * XXX: Once we stop using the socket directly, and do everything with
+	 * libpq, we can get rid of the transaction_status field altogether
+	 * and always ask libpq for it.
+	 */
+	LIBPQ_update_transaction_status(self);
+
 	return retres;
 }
 
@@ -3053,6 +2990,29 @@ int	CC_discard_marked_objects(ConnectionClass *conn)
 	}
 
 	return 1;
+}
+
+static void
+LIBPQ_update_transaction_status(ConnectionClass *self)
+{
+	if (!self->sock)
+		return;
+
+	switch (PQtransactionStatus(self->sock->pqconn))
+	{
+		case PQTRANS_IDLE:
+		case PQTRANS_ACTIVE:
+			CC_set_no_trans(self);
+			CC_set_no_error_trans(self);
+			break;
+		case PQTRANS_INERROR:
+			CC_set_in_trans(self);
+			CC_set_in_error_trans(self);
+			break;
+		default:
+			/* unknown status */
+			break;
+	}
 }
 
 static int

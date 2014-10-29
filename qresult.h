@@ -11,6 +11,8 @@
 
 #include "psqlodbc.h"
 
+#include "libpq-fe.h"
+
 #include "connection.h"
 #include "socket.h"
 #include "columninfo.h"
@@ -227,6 +229,7 @@ int			QR_close(QResultClass *self);
 void		QR_on_close_cursor(QResultClass *self);
 void		QR_close_result(QResultClass *self, BOOL destroy);
 void		QR_reset_for_re_execute(QResultClass *self);
+BOOL		QR_from_PGresult(QResultClass *self, StatementClass *stmt, ConnectionClass *conn, const char *cursor, PGresult *pgres);
 char		QR_fetch_tuples(QResultClass *self, ConnectionClass *conn, const char *cursor, int *LastMessageType);
 void		QR_free_memory(QResultClass *self);
 void		QR_set_command(QResultClass *self, const char *msg);

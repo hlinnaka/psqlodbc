@@ -2061,7 +2061,6 @@ inolog("get_Result=%p %p %d\n", res, SC_get_Result(self), self->curr_param_resul
 				{
 					if (qres->command && strnicmp(qres->command, fetch_cmd, 5) == 0)
 					{
-						res = qres;
 						break;
 					}
 					nres = qres->next;
@@ -2078,6 +2077,7 @@ inolog("get_Result=%p %p %d\n", res, SC_get_Result(self), self->curr_param_resul
 					QR_Destructor(qres);
 					qres = nres;
 				}
+				res = qres;
 			}
 			if (res && SC_is_with_hold(self))
 				QR_set_withhold(res);
