@@ -2497,7 +2497,6 @@ Prepare_and_convert(StatementClass *stmt, QueryParse *qp, QueryBuild *qb)
 	RETCODE		retval;
 	BOOL		ret, once_descr;
 	ConnectionClass *conn = SC_get_conn(stmt);
-	QResultClass	*dest_res = NULL;
 	char		plan_name[32];
 	po_ind_t	multi;
 	int		func_cs_count = 0;
@@ -2562,8 +2561,6 @@ inolog("Prepare_and_convert\n");
 
 cleanup:
 #undef	return
-	if (dest_res)
-		QR_Destructor(dest_res);
 	CLEANUP_FUNC_CONN_CS(func_cs_count, conn);
 	stmt->current_exec_param = -1;
 	QB_Destructor(qb);
@@ -2579,7 +2576,7 @@ prep_params_and_sync(StatementClass *stmt, QueryParse *qp, QueryBuild *qb)
 	CSTR		func = "prep_params_and_sync";
 	RETCODE		retval;
 	ConnectionClass *conn = SC_get_conn(stmt);
-	QResultClass	*res, *dest_res = NULL;
+	QResultClass	*res;
 	char		plan_name[32];
 	po_ind_t	multi;
 	int		func_cs_count = 0;
@@ -2663,8 +2660,6 @@ inolog("prep_params_and_sync\n");
 	retval = SQL_SUCCESS;
 cleanup:
 #undef	return
-	if (dest_res)
-		QR_Destructor(dest_res);
 	CLEANUP_FUNC_CONN_CS(func_cs_count, conn);
 	stmt->current_exec_param = -1;
 	QB_Destructor(qb);
@@ -2680,6 +2675,8 @@ RETCODE	prepareParameters(StatementClass *stmt)
 	{
 		case NOT_YET_PREPARED:
 		case ONCE_DESCRIBED:
+		case PREPARING_PERMANENTLY:
+		case PREPARING_TEMPORARILY:
 			break;
 		default:
 			return SQL_SUCCESS;
@@ -2812,13 +2809,24 @@ inolog("type=%d concur=%d\n", stmt->options.cursor_type, stmt->options.scroll_co
 	if (buildPrepareStatement &&
 		 SQL_CONCUR_READ_ONLY == stmt->options.scroll_concurrency)
 	{
-		retval = Prepare_and_convert(stmt, qp, qb);
+		/* nothing to do here. It will be prepared before execution */
+		char		plan_name[32];
+		if (NAMED_PARSE_REQUEST == SC_get_prepare_method(stmt))
+			sprintf(plan_name, "_PLAN%p", stmt);
+		else
+			strcpy(plan_name, NULL_STRING);
+
+		SC_set_planname(stmt, plan_name);
+		SC_set_prepared(stmt, plan_name[0] ? PREPARING_PERMANENTLY : PREPARING_TEMPORARILY);
+
+		//retval = Prepare_and_convert(stmt, qp, qb);
+		retval = SQL_SUCCESS;
+		
 		goto cleanup;
 	}
 
 	/* Otherwise... */
 	SC_forget_unnamed(stmt);
-	buildPrepareStatement = FALSE;
 
 	if (ci->disallow_premature)
 		prepare_dummy_cursor = stmt->pre_executing;
@@ -3646,6 +3654,145 @@ inolog("bind leng=%d\n", leng);
 	SOCK_put_n_char(conn->sock, qb.query_statement, leng);
 	if (SOCK_get_errcode(conn->sock) != 0)
 		sockerr = TRUE;
+cleanup:
+	QB_Destructor(&qb);
+
+	if (sockerr)
+	{
+		CC_set_error(conn, CONNECTION_COULD_NOT_SEND, "Could not send D Request to backend", func);
+		CC_on_abort(conn, CONN_DEAD);
+		ret = FALSE;
+	}
+	return ret;
+}
+
+/*
+ * Build an array of parameters to pass to libpq's PQexecPrepared
+ * function.
+ */
+BOOL
+build_libpq_bind_params(StatementClass *stmt, const char *plan_name,
+						int *nParams, char ***paramValues,
+						int **paramLengths,
+						int **paramFormats,
+						int *resultFormat)
+{
+	CSTR func = "build_libpq_bind_params";
+	QueryBuild	qb;
+	SQLSMALLINT	num_p;
+	int			i, num_params;
+	ConnectionClass	*conn = SC_get_conn(stmt);
+	BOOL		ret = FALSE, sockerr = FALSE, discard_output;
+	RETCODE		retval;
+	const		IPDFields *ipdopts = SC_get_IPDF(stmt);
+
+	*paramValues = NULL;
+	*paramLengths = NULL;
+	*paramFormats = NULL;
+	
+	num_params = stmt->num_params;
+	if (num_params < 0)
+	{
+		PGAPI_NumParams(stmt, &num_p);
+		num_params = num_p;
+	}
+	if (ipdopts->allocated < num_params)
+	{
+		SC_set_error(stmt, STMT_COUNT_FIELD_INCORRECT, "The # of binded parameters < the # of parameter markers", func);
+		return FALSE;
+	}
+	
+	if (QB_initialize(&qb, MIN_ALC_SIZE, stmt, NULL) < 0)
+		return FALSE;
+	
+	*paramValues = malloc(sizeof(char *) * num_params);
+	if (*paramValues == NULL)
+		goto cleanup;
+	memset(*paramValues, 0, sizeof(char *) * num_params);
+	*paramLengths = malloc(sizeof(int) * num_params);
+	if (paramLengths == NULL)
+		goto cleanup;
+	*paramFormats = malloc(sizeof(int) * num_params);
+	if (*paramFormats == NULL)
+		goto cleanup;
+
+	qb.flags |= FLGB_BUILDING_BIND_REQUEST;
+	qb.flags |= FLGB_BINARY_AS_POSSIBLE;
+
+	inolog("num_params=%d proc_return=%d\n", num_params, stmt->proc_return);
+	num_p = num_params - qb.num_discard_params;
+inolog("num_p=%d\n", num_p);
+	discard_output = (0 != (qb.flags & FLGB_DISCARD_OUTPUT));
+	if (num_p > 0)
+	{
+		int			j;
+		ParameterImplClass	*parameters = ipdopts->parameters;
+
+		for (i = stmt->proc_return, j = 0; i < num_params; i++)
+		{
+inolog("%dth parameter type oid is %u\n", i, PIC_dsp_pgtype(conn, parameters[i]));
+			if (discard_output &&
+			    SQL_PARAM_OUTPUT == parameters[i].paramType)
+				continue;
+			if (PG_TYPE_BYTEA == PIC_dsp_pgtype(conn, parameters[i]))
+			{
+				mylog("%dth parameter is of binary format\n", j);
+				/* use binary format for this param */
+				(*paramFormats)[j] = 1;
+			}
+			else
+				(*paramFormats)[j] = 0;
+			j++;
+		}
+
+		*nParams = j;
+
+		/*
+		 * Now build the parameter values.
+		 */
+		for (i = 0; i < stmt->num_params; i++)
+		{
+			BOOL		isnull;
+			char	   *val_copy;
+
+			if (discard_output && SQL_PARAM_OUTPUT == parameters[i].paramType)
+				continue;
+
+			qb.npos = 0;
+			retval = ResolveOneParam(&qb, NULL, &isnull);
+			if (SQL_ERROR == retval)
+			{
+				QB_replace_SC_error(stmt, &qb, func);
+				ret = FALSE;
+				goto cleanup;
+			}
+
+			if (!isnull)
+			{
+				val_copy = malloc(qb.npos + 1);
+				if (!val_copy)
+					goto cleanup;
+				memcpy(val_copy, qb.query_statement, qb.npos);
+				val_copy[qb.npos] = '\0';
+
+				(*paramValues)[i] = val_copy;
+				(*paramLengths)[i] = qb.npos;
+			}
+			else
+			{
+				(*paramValues)[i] = NULL;
+				(*paramLengths)[i] = 0;
+			}
+		}
+	}
+	else
+		*nParams = 0;
+
+	/* result format is text */
+	*resultFormat = 0;
+
+	ret = TRUE;
+
 cleanup:
 	QB_Destructor(&qb);
 

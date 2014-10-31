@@ -171,6 +171,8 @@ static const struct
 	}
 };
 
+static QResultClass *libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
+										 QResultClass *res, const char *comment);
 
 RETCODE		SQL_API
 PGAPI_AllocStmt(HDBC hdbc,
@@ -1963,10 +1965,14 @@ SC_execute(StatementClass *self)
 	switch (self->prepared)
 	{
 		case PREPARING_PERMANENTLY:
+			if (prepareParameters(self) != SQL_SUCCESS)
+				goto cleanup;
 		case PREPARED_PERMANENTLY:
 			use_extended_protocol = TRUE;
 			break;
 		case PREPARING_TEMPORARILY:
+			if (prepareParameters(self) != SQL_SUCCESS)
+				goto cleanup;
 		case PREPARED_TEMPORARILY:
 			if (!issue_begin)
 			{
@@ -2001,21 +2007,11 @@ SC_execute(StatementClass *self)
 			CC_begin(conn);
 		if (!plan_name)
 			plan_name = "";
-		if (!SendBindRequest(self, plan_name))
-		{
-			if (SC_get_errornumber(self) <= 0)
-				SC_set_error(self, STMT_EXEC_ERROR, "Bind request error", func);
-			goto cleanup;
-		}
-		if (!SendExecuteRequest(self, plan_name, 0))
-		{
-			if (SC_get_errornumber(self) <= 0)
-				SC_set_error(self, STMT_EXEC_ERROR, "Execute request error", func);
-			goto cleanup;
-		}
+
 		for (res = SC_get_Result(self); NULL != res && NULL != res->next; res = res->next) ;
-inolog("get_Result=%p %p %d\n", res, SC_get_Result(self), self->curr_param_result);
-		if (!(res = SendSyncAndReceive(self, self->curr_param_result ? res : NULL, "bind_and_execute")))
+
+		res = libpq_bind_and_exec(self, plan_name, self->curr_param_result ? res : NULL, "bind_and_execute");
+		if (!res)
 		{
 			if (SC_get_errornumber(self) <= 0)
 				SC_set_error(self, STMT_NO_RESPONSE, "Could not receive the response, communication down ??", func);
@@ -2534,6 +2530,157 @@ ReflectColumnsInfo(StatementClass *self, QResultClass *res)
 	return FALSE;
 }
 
+
+static QResultClass *
+libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
+					QResultClass *res, const char *comment)
+{
+	CSTR		func = "libpq_bind_and_exec";
+	ConnectionClass	*conn = SC_get_conn(stmt);
+	int			nParams;
+	char	  **paramValues = NULL;
+	int		   *paramLengths = NULL;
+	int		   *paramFormats = NULL;
+	int			resultFormat;
+	PGresult   *pgres;
+	int			pgresstatus;
+	QResultClass	*newres = NULL;
+	char	   *cmdtag;
+	BOOL		ret = FALSE;
+	if (!RequestStart(stmt, conn, func))
+		return NULL;
+
+	if (CC_is_in_trans(conn) && !SC_accessed_db(stmt))
+	{
+		if (SQL_ERROR == SetStatementSvp(stmt))
+		{
+			SC_set_error(stmt, STMT_INTERNAL_ERROR, "internal savepoint error in build_libpq_bind_params", func);
+			return NULL;
+		}
+	}
+	
+	/* 1. Bind */
+	mylog("%s: bind plan_name=%s\n", func, plan_name);
+	if (!build_libpq_bind_params(stmt, plan_name,
+								 &nParams, &paramValues,
+								 &paramLengths, &paramFormats,
+								 &resultFormat))
+	{
+		goto cleanup;
+	}
+
+	/* 2. Execute */
+	mylog("%s: execute plan_name=%s\n", func, plan_name);
+	if (!SC_is_fetchcursor(stmt))
+	{
+		switch (stmt->prepared)
+		{
+			case NOT_YET_PREPARED:
+			case ONCE_DESCRIBED:
+				SC_set_error(stmt, STMT_EXEC_ERROR, "about to execute a non-prepared statement", func);
+				goto cleanup;
+		}
+	}
+
+	SC_forget_unnamed(stmt); /* unnamed plans are unavailable */
+
+	/* 3. Receive results */
+	for (res = SC_get_Result(stmt); NULL != res && NULL != res->next; res = res->next) ;
+inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_result);
+	if (!res)
+		newres = res = QR_Constructor();
+
+	pgres = PQexecPrepared(conn->sock->pqconn,
+						   plan_name, 	/* portal name == plan name */
+						   nParams,
+						   (const char **) paramValues, paramLengths, paramFormats,
+						   resultFormat);
+
+	pgresstatus = PQresultStatus(pgres);
+	switch (pgresstatus)
+	{
+		case PGRES_COMMAND_OK:
+			/* portal query command, no tuples returned */
+			/* read in the return message from the backend */
+			cmdtag = PQcmdStatus(pgres);
+			mylog("command response: %s\n", cmdtag);
+			QR_set_command(res, cmdtag);
+			if (QR_is_fetching_tuples(res))
+			{
+				res->dataFilled = TRUE;
+				QR_set_no_fetching_tuples(res);
+				/* in case of FETCH, Portal Suspend never arrives */
+				if (strnicmp(cmdtag, "SELECT", 6) == 0)
+				{
+					mylog("%s: reached eof now\n", func);
+					QR_set_reached_eof(res);
+				}
+				else
+					res->recent_processed_row_count = atoi(PQcmdTuples(pgres));
+			}
+			else if (QR_command_successful(res))
+				QR_set_rstatus(res, PORES_COMMAND_OK);
+			break;
+
+		case PGRES_EMPTY_QUERY:
+			/* We return the empty query */
+			QR_set_rstatus(res, PORES_EMPTY_QUERY);
+			break;
+		case PGRES_NONFATAL_ERROR:
+			handle_pgres_error(conn, pgres, "send_query", res, FALSE);
+			break;
+
+		case PGRES_BAD_RESPONSE:
+		case PGRES_FATAL_ERROR:
+			handle_pgres_error(conn, pgres, "send_query", res, TRUE);
+			break;
+		case PGRES_TUPLES_OK:
+			if (!QR_from_PGresult(res, stmt, conn, NULL, pgres))
+				goto cleanup;
+			if (res->rstatus == PORES_TUPLES_OK && res->notice)
+				QR_set_rstatus(res, PORES_NONFATAL_ERROR);
+			break;
+		case PGRES_COPY_OUT:
+		case PGRES_COPY_IN:
+		case PGRES_COPY_BOTH:
+		default:
+			/* skip the unexpected response if possible */
+			CC_set_error(conn, CONNECTION_BACKEND_CRAZY, "Unexpected protocol character from backend (send_query)", func);
+			CC_on_abort(conn, CONN_DEAD);
+
+			mylog("send_query: error - %s\n", CC_get_errormsg(conn));
+			break;
+	}
+
+	if (res != newres && NULL != newres)
+		QR_Destructor(newres);
+
+	ret = TRUE;
+	
+cleanup:
+	if (paramValues)
+	{
+		int			i;
+		for (i = 0; i < nParams; i++)
+		{
+			if (paramValues[i] != NULL)
+				free(paramValues[i]);
+		}
+		free(paramValues);
+	}
+	if (paramLengths)
+		free(paramLengths);
+	if (paramFormats)
+		free(paramFormats);
+
+	if (ret)
+		return res;
+	else
+		return NULL;
+}
+
+
+
 BOOL
 SendBindRequest(StatementClass *stmt, const char *plan_name)
 {
@@ -2796,13 +2943,12 @@ inolog("!![%d].PGType %u->%u\n", i, PIC_get_pgtype(ipdopts->parameters[i]), CI_g
 	return res;
 }
 
-QResultClass *
-ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
-						  const char *query_param, Int4 qlen,
-						  Int2 num_params, const char *comment,
-						  QResultClass *res)
+BOOL
+ParseWithLibpq(StatementClass *stmt, const char *plan_name,
+			   const char *query_param, Int4 qlen,
+			   Int2 num_params, const char *comment)
 {
-	CSTR	func = "ParseAndDescribeWithLibpq";
+	CSTR	func = "ParseWithLibpq";
 	ConnectionClass	*conn = SC_get_conn(stmt);
 	SocketClass	*sock = conn->sock;
 	Int4		sta_pidx = -1, end_pidx = -1;
@@ -2810,19 +2956,11 @@ ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
 	Oid		   *paramTypes = NULL;
 	BOOL		retval = FALSE;
 	PGresult   *pgres = NULL;
-	QResultClass *newres = NULL;
-	int			num_p;
-	Int2		num_discard_params;
-	IPDFields	*ipdopts;
-	int			pidx;
-	int			i;
-	Oid			oid;
-	SQLSMALLINT paramType;
 
 	mylog("%s: plan_name=%s query=%s\n", func, plan_name, query);
 	qlog("%s: plan_name=%s query=%s\n", func, plan_name, query);
 	if (!RequestStart(stmt, conn, func))
-		return NULL;
+		return FALSE;
 
 	if (stmt->discard_output_params)
 		num_params = 0;
@@ -2912,6 +3050,54 @@ mylog("sta_pidx=%d end_pidx=%d num_p=%d\n", sta_pidx, end_pidx, num_params);
 
 	PQclear(pgres);
 	pgres = NULL;
+
+	retval = TRUE;
+
+cleanup:
+	if (paramTypes)
+		free(paramTypes);
+	if (query && query != query_param)
+		free(query);
+
+	if (pgres)
+		PQclear(pgres);
+
+	return retval;
+}
+
+
+QResultClass *
+ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
+						  const char *query_param, Int4 qlen,
+						  Int2 num_params, const char *comment,
+						  QResultClass *res)
+{
+	CSTR	func = "ParseAndDescribeWithLibpq";
+	ConnectionClass	*conn = SC_get_conn(stmt);
+	SocketClass	*sock = conn->sock;
+	char	   *query = NULL;
+	Oid		   *paramTypes = NULL;
+	BOOL		retval = FALSE;
+	PGresult   *pgres = NULL;
+	QResultClass *newres = NULL;
+	int			num_p;
+	Int2		num_discard_params;
+	IPDFields	*ipdopts;
+	int			pidx;
+	int			i;
+	Oid			oid;
+	SQLSMALLINT paramType;
+
+	mylog("%s: plan_name=%s query=%s\n", func, plan_name, query);
+	qlog("%s: plan_name=%s query=%s\n", func, plan_name, query);
+	if (!RequestStart(stmt, conn, func))
+		return NULL;
+
+	if (!ParseWithLibpq(stmt, plan_name, query_param, qlen,
+						num_params, comment))
+	{
+		return NULL;
+	}
 
 	/* Describe */
 	mylog("%s: describing plan_name=%s\n", func, plan_name);

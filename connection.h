@@ -16,6 +16,8 @@
 #include <string.h>
 #include "descriptor.h"
 
+#include <libpq-fe.h>
+
 #if defined (POSIX_MULTITHREAD_SUPPORT)
 #include <pthread.h>
 #endif
@@ -510,6 +512,9 @@ void		CC_set_errormsg(ConnectionClass *self, const char *message);
 char		CC_get_error(ConnectionClass *self, int *number, char **message);
 QResultClass *CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UDWORD flag, StatementClass *stmt, const char *appendq);
 #define CC_send_query(self, query, qi, flag, stmt) CC_send_query_append(self, query, qi, flag, stmt, NULL)
+void		handle_pgres_error(ConnectionClass *self, const PGresult *pgres,
+				   const char *comment,
+				   QResultClass *res, BOOL fatal);
 void		CC_clear_error(ConnectionClass *self);
 int		CC_send_function(ConnectionClass *conn, int fnid, void *result_buf, int *actual_result_len, int result_is_int, LO_ARG *argv, int nargs);
 char		CC_send_settings(ConnectionClass *self);
