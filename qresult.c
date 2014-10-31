@@ -692,124 +692,6 @@ inolog("!!%p->cursTup=%d total_read=%d\n", self, self->cursTuple, self->num_tota
 }
 
 
-/*	This function is called by send_query() */
-char
-QR_fetch_tuples(QResultClass *self, ConnectionClass *conn, const char *cursor, int *LastMessageType)
-{
-	CSTR		func = "QR_fetch_tuples";
-	SQLLEN			tuple_size;
-
-	/*
-	 * If called from send_query the first time (conn != NULL), then set
-	 * the inTuples state, and read the tuples.  If conn is NULL, it
-	 * implies that we are being called from next_tuple(), like to get
-	 * more rows so don't call next_tuple again!
-	 */
-	if (conn != NULL)
-	{
-		ConnInfo   *ci = &(conn->connInfo);
-		BOOL		fetch_cursor = (cursor && cursor[0]);
-
-		if (NULL != LastMessageType)
-			*LastMessageType = 0;
-		QR_set_conn(self, conn);
-
-		mylog("%s: cursor = '%s', self->cursor=%p\n", func, (cursor == NULL) ? "" : cursor, QR_get_cursor(self));
-
-		if (cursor && !cursor[0])
-			cursor = NULL;
-		if (fetch_cursor)
-		{
-			if (!cursor)
-			{
-				QR_set_rstatus(self, PORES_INTERNAL_ERROR);
-				QR_set_message(self, "Internal Error -- no cursor for fetch");
-				return FALSE;
-			}
-		}
-		QR_set_cursor(self, cursor);
-
-		/*
-		 * Read the field attributes.
-		 *
-		 * $$$$ Should do some error control HERE! $$$$
-		 */
-		if (CI_read_fields(QR_get_fields(self), QR_get_conn(self)))
-		{
-			QR_set_rstatus(self, PORES_FIELDS_OK);
-			self->num_fields = CI_get_num_fields(QR_get_fields(self));
-			if (QR_haskeyset(self))
-				self->num_fields -= self->num_key_fields;
-		}
-		else
-		{
-			if (NULL == QR_get_fields(self)->coli_array)
-			{
-				QR_set_rstatus(self, PORES_NO_MEMORY_ERROR);
-				QR_set_messageref(self, "Out of memory while reading field information");
-			}
-			else
-			{
-				QR_set_rstatus(self, PORES_BAD_RESPONSE);
-				QR_set_message(self, "Error reading field information");
-			}
-			return FALSE;
-		}
-
-		mylog("%s: past CI_read_fields: num_fields = %d\n", func, self->num_fields);
-
-		if (fetch_cursor)
-		{
-			if (self->cache_size <= 0)
-				self->cache_size = ci->drivers.fetch_max;
-			tuple_size = self->cache_size;
-		}
-		else
-			tuple_size = TUPLE_MALLOC_INC;
-
-		/* allocate memory for the tuple cache */
-		mylog("MALLOC: tuple_size = %d, size = %d\n", tuple_size, self->num_fields * sizeof(TupleField) * tuple_size);
-		self->count_backend_allocated = self->count_keyset_allocated = 0;
-		if (self->num_fields > 0)
-		{
-			QR_MALLOC_return_with_error(self->backend_tuples, TupleField, self->num_fields * sizeof(TupleField) * tuple_size, self, "Could not get memory for tuple cache.", FALSE);
-			self->count_backend_allocated = tuple_size;
-		}
-		if (QR_haskeyset(self))
-		{
-			QR_MALLOC_return_with_error(self->keyset, KeySet, sizeof(KeySet) * tuple_size, self, "Could not get memory for key cache.", FALSE);
-			memset(self->keyset, 0, sizeof(KeySet) * tuple_size);
-			self->count_keyset_allocated = tuple_size;
-		}
-
-		QR_set_fetching_tuples(self);
-
-		/* Force a read to occur in next_tuple */
-		QR_set_num_cached_rows(self, 0);
-		QR_set_next_in_cache(self, 0);
-		QR_set_rowstart_in_cache(self, 0);
-		self->key_base = 0;
-
-		return QR_next_tuple(self, NULL, LastMessageType);
-	}
-	else
-	{
-		/*
-		 * Always have to read the field attributes. But we dont have to
-		 * reallocate memory for them!
-		 */
-
-		if (!CI_read_fields(NULL, QR_get_conn(self)))
-		{
-			QR_set_rstatus(self, PORES_BAD_RESPONSE);
-			QR_set_message(self, "Error reading field information");
-			return FALSE;
-		}
-		return TRUE;
-	}
-}
-
-
 /*
  *	Procedure needed when closing cursors.
  */
@@ -1026,7 +908,7 @@ static SQLLEN enlargeKeyCache(QResultClass *self, SQLLEN add_size, const char *m
 
 /*	This function is called by fetch_tuples() AND SQLFetch() */
 int
-QR_next_tuple(QResultClass *self, StatementClass *stmt, int *LastMessageType)
+QR_next_tuple(QResultClass *self, StatementClass *stmt)
 {
 	CSTR	func = "QR_next_tuple";
 	int			id, ret = TRUE;
@@ -1058,8 +940,6 @@ QR_next_tuple(QResultClass *self, StatementClass *stmt, int *LastMessageType)
 inolog("Oh %p->fetch_number=%d\n", self, self->fetch_number);
 inolog("in total_read=%d cursT=%d currT=%d ad=%d total=%d rowsetSize=%d\n", self->num_total_read, self->cursTuple, stmt ? stmt->currTuple : -1, self->ad_count, QR_get_num_total_tuples(self), self->rowset_size_include_ommitted);
 
-	if (NULL != LastMessageType)
-		*LastMessageType = 0;
 	num_total_rows = QR_get_num_total_tuples(self);
 	conn = QR_get_conn(self);
 	curr_eof = FALSE;
@@ -1331,8 +1211,7 @@ inolog("clear obsolete %d tuples\n", num_backend_rows);
 		if (!QR_is_permanent(self)) /* Execute seems an invalid operation after COMMIT */
 		{
 			ExecuteRequest = TRUE;
-			if (!SendExecuteRequest(stmt, QR_get_cursor(self),
-				fetch_size))
+			if (!SendExecuteRequest(stmt, QR_get_cursor(self), fetch_size))
 				RETURN(FALSE)
 			if (!SendSyncRequest(conn))
 				RETURN(FALSE)
@@ -1392,46 +1271,12 @@ inolog("reached_eof_now=%d\n", reached_eof_now);
 		id = SOCK_get_id(sock);
 		if (0 != SOCK_get_errcode(sock))
 			break;
-		if (NULL != LastMessageType)
-			*LastMessageType = id;
 		response_length = SOCK_get_response_length(sock);
 		if (0 != SOCK_get_errcode(sock))
 			break;
 inolog("id='%c' response_length=%d\n", id, response_length);
 		switch (id)
 		{
-			case 'T':
-				mylog("Tuples within tuples ?? OK try to handle them\n");
-				QR_set_no_fetching_tuples(self);
-				if (self->num_total_read > 0)
-				{
-					mylog("fetched %d rows\n", self->num_total_read);
-					/* set to first row */
-					self->tupleField = self->backend_tuples + (offset * num_fields);
-				}
-				else
-				{
-					mylog("    [ fetched 0 rows ]\n");
-				}
-				/* add new Result class */
-				self->next = QR_Constructor();
-				if (!self->next)
-				{
-					CC_set_error(conn, CONNECTION_COULD_NOT_RECEIVE, "Could not create result info in QR_next_tuple.", func);
-					CC_on_abort(conn, CONN_DEAD);
-					RETURN(FALSE)
-				}
-				QR_set_cache_size(self->next, self->cache_size);
-				self = self->next;
-				if (!QR_fetch_tuples(self, conn, NULL, LastMessageType))
-				{
-					CC_set_error(conn, CONNECTION_COULD_NOT_RECEIVE, QR_get_message(self), func);
-					RETURN(FALSE)
-				}
-
-				loopend = rcvend = TRUE;
-				break;
-
 			case 'D':			/* Tuples in ASCII format  */
 
 				if (!QR_get_tupledata(self, FALSE))
@@ -1506,6 +1351,7 @@ inolog("id='%c' response_length=%d\n", id, response_length);
 				QR_set_no_fetching_tuples(self);
 				self->dataFilled = TRUE;
 				break;
+			case 'T':
 			default:
 				/* skip the unexpected response if possible */
 				if (response_length >= 0)
@@ -1527,8 +1373,6 @@ inolog("id='%c' response_length=%d\n", id, response_length);
 			id = SOCK_get_id(sock);
 			if (0 != SOCK_get_errcode(sock))
 				break;
-			if (NULL != LastMessageType)
-				*LastMessageType = id;
 			response_length = SOCK_get_response_length(sock);
 			if (0 != SOCK_get_errcode(sock))
 				break;

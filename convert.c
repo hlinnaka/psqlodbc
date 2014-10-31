@@ -2490,83 +2490,6 @@ insert_without_target(const char *stmt, size_t *endpos)
 		|| ';' == wstmt[0];
 }
 
-static	int
-Prepare_and_convert(StatementClass *stmt, QueryParse *qp, QueryBuild *qb)
-{
-	CSTR		func = "Prepare_and_convert";
-	RETCODE		retval;
-	BOOL		ret, once_descr;
-	ConnectionClass *conn = SC_get_conn(stmt);
-	char		plan_name[32];
-	po_ind_t	multi;
-	int		func_cs_count = 0;
-	const char	*orgquery = NULL, *srvquery = NULL;
-	Int4		endp1, endp2;
-	SQLSMALLINT	num_p1;
-
-	switch (stmt->prepared)
-	{
-		case NOT_YET_PREPARED:
-		case ONCE_DESCRIBED:
-			break;
-		default:
-			return SQL_SUCCESS;
-	}
-	if (QB_initialize(qb, qp->stmt_len, stmt, NULL) < 0)
-		return SQL_ERROR;
-
-inolog("Prepare_and_convert\n");
-	once_descr = (ONCE_DESCRIBED == stmt->prepared);
-	qb->flags |= FLGB_BUILDING_PREPARE_STATEMENT;
-	for (qp->opos = 0; qp->opos < qp->stmt_len; qp->opos++)
-	{
-		retval = inner_process_tokens(qp, qb);
-		if (SQL_ERROR == retval)
-		{
-			QB_replace_SC_error(stmt, qb, func);
-			QB_Destructor(qb);
-			return retval;
-		}
-	}
-	CVT_TERMINATE(qb);
-
-	retval = SQL_ERROR;
-#define	return	DONT_CALL_RETURN_FROM_HERE???
-	ENTER_INNER_CONN_CS(conn, func_cs_count);
-	if (NAMED_PARSE_REQUEST == SC_get_prepare_method(stmt))
-		sprintf(plan_name, "_PLAN%p", stmt);
-	else
-		strcpy(plan_name, NULL_STRING);
-
-	stmt->current_exec_param = 0;
-	multi = stmt->multi_statement;
-	if (multi > 0)
-	{
-		orgquery = stmt->statement;
-		SC_scanQueryAndCountParams(orgquery, conn, &endp1, &num_p1, NULL, NULL);
-		srvquery = qb->query_statement;
-		SC_scanQueryAndCountParams(srvquery, conn, &endp2, NULL, NULL, NULL);
-		mylog("%s:SendParseRequest for the first command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
-		ret = SendParseRequest(stmt, plan_name, srvquery, endp2, num_p1);
-	}
-	else
-		ret = SendParseRequest(stmt, plan_name, qb->query_statement, SQL_NTS, -1);
-	if (!ret)
-		goto cleanup;
-	if (!once_descr && (!SendDescribeRequest(stmt, plan_name, TRUE)))
-		goto cleanup;
-	SC_set_planname(stmt, plan_name);
-	SC_set_prepared(stmt, plan_name[0] ? PREPARING_PERMANENTLY : PREPARING_TEMPORARILY);
-	retval = SQL_SUCCESS;
-
-cleanup:
-#undef	return
-	CLEANUP_FUNC_CONN_CS(func_cs_count, conn);
-	stmt->current_exec_param = -1;
-	QB_Destructor(qb);
-	return retval;
-}
-
 /*
  * Describe the parameters and portal for given query.
  */
@@ -2614,7 +2537,7 @@ inolog("prep_params_and_sync\n");
 	{
 		SC_scanQueryAndCountParams(orgquery, conn, &endp1, &num_p1, NULL, NULL);
 		SC_scanQueryAndCountParams(srvquery, conn, &endp2, NULL, NULL, NULL);
-		mylog("%s:SendParseRequest for the first command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
+		mylog("%s:parsed for the first command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
 	}
 	else
 	{
@@ -2646,7 +2569,7 @@ inolog("prep_params_and_sync\n");
 		num_pa += num_p1;
 		SC_scanQueryAndCountParams(orgquery, conn, &endp1, &num_p1, &multi, NULL);
 		SC_scanQueryAndCountParams(srvquery, conn, &endp2, &num_p2, NULL, NULL);
-		mylog("%s:SendParseRequest for the subsequent command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
+		mylog("%s:parsed for the subsequent command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
 		if (num_p2 > 0)
 		{
 			stmt->current_exec_param = num_pa;
@@ -2670,11 +2593,16 @@ RETCODE	prepareParameters(StatementClass *stmt)
 {
 	QueryParse	query_org, *qp;
 	QueryBuild	query_crt, *qb;
-
+	ConnectionClass *conn = SC_get_conn(stmt);
+	
 	switch (stmt->prepared)
 	{
+		case PREPARED_TEMPORARILY:
+			if (conn->unnamed_prepared_stmt == stmt)
+				return SQL_SUCCESS;
+			else
+				break;
 		case NOT_YET_PREPARED:
-		case ONCE_DESCRIBED:
 		case PREPARING_PERMANENTLY:
 		case PREPARING_TEMPORARILY:
 			break;
@@ -2821,7 +2749,7 @@ inolog("type=%d concur=%d\n", stmt->options.cursor_type, stmt->options.scroll_co
 
 		//retval = Prepare_and_convert(stmt, qp, qb);
 		retval = SQL_SUCCESS;
-		
+
 		goto cleanup;
 	}
 

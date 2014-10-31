@@ -411,7 +411,7 @@ CC_initialize(ConnectionClass *rv, BOOL lockinit)
 	memset(rv, 0, clear_size);
 	rv->status = CONN_NOT_CONNECTED;
 	rv->transact_status = CONN_IN_AUTOCOMMIT;		/* autocommit by default */
-	rv->stmt_in_extquery = NULL;
+	rv->unnamed_prepared_stmt = NULL;
 
 	rv->stmts = (StatementClass **) malloc(sizeof(StatementClass *) * STMT_INCREMENT);
 	if (!rv->stmts)
@@ -751,8 +751,8 @@ CC_cleanup(ConnectionClass *self, BOOL keepCommunication)
 	{
 		self->status = CONN_NOT_CONNECTED;
 		self->transact_status = CONN_IN_AUTOCOMMIT;
+		self->unnamed_prepared_stmt = NULL;
 	}
-	self->stmt_in_extquery = NULL;
 	if (!keepCommunication)
 	{
 		CC_conninfo_init(&(self->connInfo), CLEANUP_FOR_REUSE);
@@ -862,7 +862,6 @@ EatReadyForQuery(ConnectionClass *conn)
 			CC_set_in_error_trans(conn);
 			break;
 	}
-	conn->stmt_in_extquery = NULL;
 
 	return id;
 }
@@ -2111,16 +2110,6 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 	}
 
 	ENTER_INNER_CONN_CS(self, func_cs_count);
-	/* Finish the pending extended query first */
-	if (!SyncParseRequest(self))
-	{
-		if (CC_get_errornumber(self) <= 0)
-		{
-			CC_set_error(self, CONN_EXEC_ERROR, "error occured while calling SyncParseRequest() in CC_send_query_append()", func);
-			CLEANUP_FUNC_CONN_CS(func_cs_count, self);
-			return NULL;
-		}
-	}
 /* Indicate that we are sending a query to the backend */
 	if ((NULL == query) || (query[0] == '\0'))
 	{
@@ -2549,14 +2538,6 @@ CC_send_function(ConnectionClass *self, int fnid, void *result_buf, int *actual_
 	}
 
 	/* Finish the pending extended query first */
-	if (!SyncParseRequest(self))
-	{
-		if (CC_get_errornumber(self) <= 0)
-		{
-			CC_set_error(self, CONN_EXEC_ERROR, "error occured while calling SyncParseRequest() in CC_send_function()", func);
-			return FALSE;
-		}
-	}
 #define	return DONT_CALL_RETURN_FROM_HERE???
 	ENTER_INNER_CONN_CS(self, func_cs_count);
 

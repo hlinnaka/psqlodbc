@@ -376,8 +376,10 @@ enum
 	,PREPARING_PERMANENTLY
 	,PREPARING_TEMPORARILY
 	,PREPARED_PERMANENTLY
-	,PREPARED_TEMPORARILY
-	,ONCE_DESCRIBED
+	,PREPARED_TEMPORARILY /* Is currently, or once was, prepared as unnamed
+						   * statement. You must check
+						   * connection->unnamed_prepared_stmt to see if it
+						   * still is */
 };
 
 /*	misc info */
@@ -507,14 +509,8 @@ RETCODE		DiscardStatementSvp(StatementClass *self, RETCODE, BOOL errorOnly);
 
 QResultClass *ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name, const char *query_p, Int4 qlen, Int2 num_params, const char *comment, QResultClass *res);
 
-BOOL		SendParseRequest(StatementClass *self, const char *name,
-			const char *query, Int4 qlen, Int2 num_params);
-BOOL		SyncParseRequest(ConnectionClass *conn);
-BOOL		SendDescribeRequest(StatementClass *self, const char *name, BOOL paramAlso);
-BOOL		SendBindRequest(StatementClass *self, const char *name);
 BOOL		BuildBindRequest(StatementClass *stmt, const char *name);
 BOOL		SendExecuteRequest(StatementClass *stmt, const char *portal, UInt4 count);
-QResultClass	*SendSyncAndReceive(StatementClass *stmt, QResultClass *res, const char *comment);
 /*
  *	Macros to convert global index <-> relative index in resultset/rowset
  */
