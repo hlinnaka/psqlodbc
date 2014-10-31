@@ -2709,7 +2709,7 @@ copy_statement_with_parameters(StatementClass *stmt, BOOL buildPrepareStatement)
 
 	char	   *new_statement;
 
-	BOOL	begin_first = FALSE, prepare_dummy_cursor = FALSE, bPrepConv;
+	BOOL	begin_first = FALSE, prepare_dummy_cursor = FALSE;
 	ConnectionClass *conn = SC_get_conn(stmt);
 	ConnInfo   *ci = &(conn->connInfo);
 	const		char *bestitem = NULL;
@@ -2799,17 +2799,24 @@ inolog("type=%d concur=%d\n", stmt->options.cursor_type, stmt->options.scroll_co
 		SC_set_pre_executable(stmt);
 	qb = &query_crt;
 	qb->query_statement = NULL;
-	bPrepConv = FALSE;
 	if (PREPARED_PERMANENTLY == stmt->prepared)
-		bPrepConv = TRUE;
-	else if (buildPrepareStatement &&
+	{
+		/* already prepared */
+		goto cleanup;
+	}
+
+	/*
+	 * If it's a simple read-only cursor, we use extended query protocol to
+	 * Parse it.
+	 */
+	if (buildPrepareStatement &&
 		 SQL_CONCUR_READ_ONLY == stmt->options.scroll_concurrency)
-		bPrepConv = TRUE;
-	if (bPrepConv)
 	{
 		retval = Prepare_and_convert(stmt, qp, qb);
 		goto cleanup;
 	}
+
+	/* Otherwise... */
 	SC_forget_unnamed(stmt);
 	buildPrepareStatement = FALSE;
 
