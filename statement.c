@@ -2796,6 +2796,268 @@ inolog("!![%d].PGType %u->%u\n", i, PIC_get_pgtype(ipdopts->parameters[i]), CI_g
 	return res;
 }
 
+QResultClass *
+ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
+						  const char *query_param, Int4 qlen,
+						  Int2 num_params, const char *comment,
+						  QResultClass *res)
+{
+	CSTR	func = "ParseAndDescribeWithLibpq";
+	ConnectionClass	*conn = SC_get_conn(stmt);
+	SocketClass	*sock = conn->sock;
+	Int4		sta_pidx = -1, end_pidx = -1;
+	char	   *query = NULL;
+	Oid		   *paramTypes = NULL;
+	BOOL		retval = FALSE;
+	PGresult   *pgres = NULL;
+	QResultClass *newres = NULL;
+	int			num_p;
+	Int2		num_discard_params;
+	IPDFields	*ipdopts;
+	int			pidx;
+	int			i;
+	Oid			oid;
+	SQLSMALLINT paramType;
+
+	mylog("%s: plan_name=%s query=%s\n", func, plan_name, query);
+	qlog("%s: plan_name=%s query=%s\n", func, plan_name, query);
+	if (!RequestStart(stmt, conn, func))
+		return NULL;
+
+	if (stmt->discard_output_params)
+		num_params = 0;
+	else if (num_params != 0)
+	{
+#ifdef	NOT_USED
+		sta_pidx += stmt->proc_return;
+#endif /* NOT_USED */
+		int	pidx;
+
+		sta_pidx = stmt->current_exec_param;
+		if (num_params < 0)
+			end_pidx = stmt->num_params - 1;
+		else
+			end_pidx = sta_pidx + num_params - 1;
+#ifdef	NOT_USED
+		num_params = end_pidx - sta_pidx + 1;
+#endif /* NOT_USED */
+		for (num_params = 0, pidx = sta_pidx - 1;;)
+		{
+			SC_param_next(stmt, &pidx, NULL, NULL);
+			if (pidx > end_pidx)
+				break;
+			else if (pidx < end_pidx)
+				num_params++;
+			else
+			{
+				num_params++;
+				break;
+			}
+		}
+mylog("sta_pidx=%d end_pidx=%d num_p=%d\n", sta_pidx, end_pidx, num_params);
+	}
+	qlen = (SQL_NTS == qlen) ? strlen(query_param) : qlen;
+
+	if (qlen == SQL_NTS)
+		query = (char *) query_param;
+	else
+	{
+		query = malloc(qlen + 1);
+		if (!query)
+			goto cleanup;
+		memcpy(query, query_param, qlen);
+		query[qlen] = '\0';
+	}
+
+	/*
+	 * We let the server deduce the right datatype for the parameters, except
+	 * for out parameters, which are sent as VOID.
+	 */
+	if (num_params > 0)
+	{
+		int	i;
+		int j;
+		IPDFields	*ipdopts = SC_get_IPDF(stmt);
+
+		paramTypes = malloc(sizeof(Oid) * num_params);
+		if (paramTypes == NULL)
+			goto cleanup;
+
+		j = 0;
+		for (i = sta_pidx; i <= end_pidx; i++)
+		{
+			if (i < ipdopts->allocated &&
+			    SQL_PARAM_OUTPUT == ipdopts->parameters[i].paramType)
+				paramTypes[j++] = PG_TYPE_VOID;
+			else
+				paramTypes[j++] = 0;
+		}
+	}
+
+	/*
+	 * XXX: We need to do Prepare + Describe as two different round-trips
+	 * to the server, while without libpq we send a Parse and Describe
+	 * message followed by a single Sync.
+	 */
+	
+	/* Prepare */
+	pgres = PQprepare(sock->pqconn, plan_name, query, num_params, paramTypes);
+	if (PQresultStatus(pgres) != PGRES_COMMAND_OK)
+		goto cleanup;
+
+	if (stmt->plan_name)
+		SC_set_prepared(stmt, PREPARED_PERMANENTLY);
+	else
+		SC_set_prepared(stmt, PREPARED_TEMPORARILY);
+
+	PQclear(pgres);
+	pgres = NULL;
+
+	/* Describe */
+	mylog("%s: describing plan_name=%s\n", func, plan_name);
+
+	pgres = PQdescribePrepared(sock->pqconn, plan_name);
+	if (PQresultStatus(pgres) != PGRES_COMMAND_OK)
+	{
+		/* skip the unexpected response if possible */
+		CC_set_error(conn, CONNECTION_BACKEND_CRAZY, "Unexpected result from PQdescribePrepared", func);
+		CC_on_abort(conn, CONN_DEAD);
+
+		mylog("send_query: error - %s\n", CC_get_errormsg(conn));
+		goto cleanup;
+	}
+
+	if (!res)
+		newres = res = QR_Constructor();
+
+	/* Extrace parameter information from the result set */
+	num_p = PQnparams(pgres);
+inolog("num_params=%d info=%d\n", stmt->num_params, num_p);
+	num_discard_params = 0;
+	if (stmt->discard_output_params)
+		CountParameters(stmt, NULL, NULL, &num_discard_params);
+	if (num_discard_params < stmt->proc_return)
+		num_discard_params = stmt->proc_return;
+	if (num_p + num_discard_params != (int) stmt->num_params)
+	{
+		mylog("ParamInfo unmatch num_params(=%d) != info(=%d)+discard(=%d)\n", stmt->num_params, num_p, num_discard_params);
+		/* stmt->num_params = (Int2) num_p + num_discard_params; it's possible in case of multi command queries */
+	}
+	ipdopts = SC_get_IPDF(stmt);
+	extend_iparameter_bindings(ipdopts, stmt->num_params);
+#ifdef	NOT_USED
+	if (stmt->discard_output_params)
+	{
+		for (i = 0, pidx = stmt->proc_return; i < num_p && pidx < stmt->num_params; pidx++)
+		{
+			paramType = ipdopts->parameters[pidx].paramType;
+			if (SQL_PARAM_OUTPUT == paramType)
+			{
+				i++;
+				continue;
+			}
+			oid = SOCK_get_int(conn->sock, 4);
+			PIC_set_pgtype(ipdopts->parameters[pidx], oid);
+		}
+	}
+	else
+	{
+		for (i = 0, pidx = stmt->proc_return; i < num_p; i++, pidx++)
+		{
+			paramType = ipdopts->parameters[pidx].paramType;
+			oid = SOCK_get_int(conn->sock, 4);
+			if (SQL_PARAM_OUTPUT != paramType ||
+				PG_TYPE_VOID != oid)
+				PIC_set_pgtype(ipdopts->parameters[pidx], oid);
+		}
+	}
+#endif /* NOT_USED */
+	pidx = stmt->current_exec_param;
+	if (pidx >= 0)
+		pidx--;
+	for (i = 0; i < num_p; i++)
+	{
+		SC_param_next(stmt, &pidx, NULL, NULL);
+		if (pidx >= stmt->num_params)
+		{
+			mylog("%dth parameter's position(%d) is out of bound[%d]\n", i, pidx, stmt->num_params);
+			break;
+		}
+		oid = PQparamtype(pgres, i);
+		paramType = ipdopts->parameters[pidx].paramType;
+		if (SQL_PARAM_OUTPUT != paramType ||
+			PG_TYPE_VOID != oid)
+			PIC_set_pgtype(ipdopts->parameters[pidx], oid);
+	}
+
+	/* Extract Portal information */
+	QR_set_conn(res, conn);
+
+	if (CI_read_fields_from_pgres(QR_get_fields(res), pgres))
+	{
+		Int2	dummy1, dummy2;
+		int	cidx;
+		int num_io_params;
+
+		QR_set_rstatus(res, PORES_FIELDS_OK);
+		res->num_fields = CI_get_num_fields(QR_get_fields(res));
+		if (QR_haskeyset(res))
+			res->num_fields -= res->num_key_fields;
+		num_io_params = CountParameters(stmt, NULL, &dummy1, &dummy2);
+		if (stmt->proc_return > 0 ||
+			num_io_params > 0)
+		{
+			ipdopts = SC_get_IPDF(stmt);
+			extend_iparameter_bindings(ipdopts, stmt->num_params);
+			for (i = 0, cidx = 0; i < stmt->num_params; i++)
+			{
+				if (i < stmt->proc_return)
+					ipdopts->parameters[i].paramType = SQL_PARAM_OUTPUT;
+				paramType =ipdopts->parameters[i].paramType;
+				if (SQL_PARAM_OUTPUT == paramType ||
+					SQL_PARAM_INPUT_OUTPUT == paramType)
+				{
+					inolog("!![%d].PGType %u->%u\n", i, PIC_get_pgtype(ipdopts->parameters[i]), CI_get_oid(QR_get_fields(res), cidx));
+					PIC_set_pgtype(ipdopts->parameters[i], CI_get_oid(QR_get_fields(res), cidx));
+					cidx++;
+				}
+			}
+		}
+	}
+	else
+	{
+		if (NULL == QR_get_fields(res)->coli_array)
+		{
+			QR_set_rstatus(res, PORES_NO_MEMORY_ERROR);
+			QR_set_messageref(res, "Out of memory while reading field information");
+		}
+		else
+		{
+			QR_set_rstatus(res, PORES_BAD_RESPONSE);
+			QR_set_message(res, "Error reading field information");
+		}
+	}
+
+	retval = TRUE;
+
+cleanup:
+	if (res != newres && NULL != newres)
+		QR_Destructor(newres);
+
+	if (paramTypes)
+		free(paramTypes);
+	if (query && query != query_param)
+		free(query);
+
+	if (pgres)
+		PQclear(pgres);
+	
+	if (retval)
+		return res;
+	else
+		return NULL;
+}
+
 BOOL
 SendParseRequest(StatementClass *stmt, const char *plan_name, const char *query, Int4 qlen, Int2 num_params)
 {

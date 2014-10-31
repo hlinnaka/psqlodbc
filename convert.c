@@ -2490,11 +2490,21 @@ insert_without_target(const char *stmt, size_t *endpos)
 		|| ';' == wstmt[0];
 }
 
-static
-RETCODE	prep_params(StatementClass *stmt, QueryParse *qp, QueryBuild *qb, BOOL sync);
 static	int
 Prepare_and_convert(StatementClass *stmt, QueryParse *qp, QueryBuild *qb)
 {
+	CSTR		func = "Prepare_and_convert";
+	RETCODE		retval;
+	BOOL		ret, once_descr;
+	ConnectionClass *conn = SC_get_conn(stmt);
+	QResultClass	*dest_res = NULL;
+	char		plan_name[32];
+	po_ind_t	multi;
+	int		func_cs_count = 0;
+	const char	*orgquery = NULL, *srvquery = NULL;
+	Int4		endp1, endp2;
+	SQLSMALLINT	num_p1;
+
 	switch (stmt->prepared)
 	{
 		case NOT_YET_PREPARED:
@@ -2505,25 +2515,8 @@ Prepare_and_convert(StatementClass *stmt, QueryParse *qp, QueryBuild *qb)
 	}
 	if (QB_initialize(qb, qp->stmt_len, stmt, NULL) < 0)
 		return SQL_ERROR;
-	return prep_params(stmt, qp, qb, FALSE);
-}
 
-static
-RETCODE	prep_params(StatementClass *stmt, QueryParse *qp, QueryBuild *qb, BOOL sync)
-{
-	CSTR		func = "prep_params";
-	RETCODE		retval;
-	BOOL		ret, once_descr;
-	ConnectionClass *conn = SC_get_conn(stmt);
-	QResultClass	*res, *dest_res = NULL;
-	char		plan_name[32];
-	po_ind_t	multi;
-	int		func_cs_count = 0;
-	const char	*orgquery = NULL, *srvquery = NULL;
-	Int4		endp1, endp2;
-	SQLSMALLINT	num_pa = 0, num_p1, num_p2;
-
-inolog("prep_params\n");
+inolog("Prepare_and_convert\n");
 	once_descr = (ONCE_DESCRIBED == stmt->prepared);
 	qb->flags |= FLGB_BUILDING_PREPARE_STATEMENT;
 	for (qp->opos = 0; qp->opos < qp->stmt_len; qp->opos++)
@@ -2565,21 +2558,80 @@ inolog("prep_params\n");
 		goto cleanup;
 	SC_set_planname(stmt, plan_name);
 	SC_set_prepared(stmt, plan_name[0] ? PREPARING_PERMANENTLY : PREPARING_TEMPORARILY);
-	if (!sync)
+	retval = SQL_SUCCESS;
+
+cleanup:
+#undef	return
+	if (dest_res)
+		QR_Destructor(dest_res);
+	CLEANUP_FUNC_CONN_CS(func_cs_count, conn);
+	stmt->current_exec_param = -1;
+	QB_Destructor(qb);
+	return retval;
+}
+
+/*
+ * Describe the parameters and portal for given query.
+ */
+static RETCODE
+prep_params_and_sync(StatementClass *stmt, QueryParse *qp, QueryBuild *qb)
+{
+	CSTR		func = "prep_params_and_sync";
+	RETCODE		retval;
+	ConnectionClass *conn = SC_get_conn(stmt);
+	QResultClass	*res, *dest_res = NULL;
+	char		plan_name[32];
+	po_ind_t	multi;
+	int		func_cs_count = 0;
+	const char	*orgquery = NULL, *srvquery = NULL;
+	Int4		endp1, endp2;
+	SQLSMALLINT	num_pa = 0, num_p1, num_p2;
+
+inolog("prep_params_and_sync\n");
+	qb->flags |= FLGB_BUILDING_PREPARE_STATEMENT;
+	for (qp->opos = 0; qp->opos < qp->stmt_len; qp->opos++)
 	{
-		retval = SQL_SUCCESS;
-		goto cleanup;
+		retval = inner_process_tokens(qp, qb);
+		if (SQL_ERROR == retval)
+		{
+			QB_replace_SC_error(stmt, qb, func);
+			QB_Destructor(qb);
+			return retval;
+		}
 	}
-	if (!(res = SendSyncAndReceive(stmt, NULL, "prepare_and_describe")))
-	{
-		SC_set_error(stmt, STMT_NO_RESPONSE, "commnication error while preapreand_describe", func);
-		CC_on_abort(conn, CONN_DEAD);
-		goto cleanup;
-	}
-	if (once_descr)
-		dest_res = res;
+	CVT_TERMINATE(qb);
+
+	retval = SQL_ERROR;
+#define	return	DONT_CALL_RETURN_FROM_HERE???
+	ENTER_INNER_CONN_CS(conn, func_cs_count);
+	if (NAMED_PARSE_REQUEST == SC_get_prepare_method(stmt))
+		sprintf(plan_name, "_PLAN%p", stmt);
 	else
-		SC_set_Result(stmt, res);
+		strcpy(plan_name, NULL_STRING);
+
+	stmt->current_exec_param = 0;
+	multi = stmt->multi_statement;
+	orgquery = stmt->statement;
+	srvquery = qb->query_statement;
+	if (multi > 0)
+	{
+		SC_scanQueryAndCountParams(orgquery, conn, &endp1, &num_p1, NULL, NULL);
+		SC_scanQueryAndCountParams(srvquery, conn, &endp2, NULL, NULL, NULL);
+		mylog("%s:SendParseRequest for the first command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
+	}
+	else
+	{
+		endp2 = SQL_NTS;
+		num_p1 = -1;
+	}
+
+	SC_set_planname(stmt, plan_name);
+	SC_set_prepared(stmt, plan_name[0] ? PREPARING_PERMANENTLY : PREPARING_TEMPORARILY);
+
+	res = ParseAndDescribeWithLibpq(stmt, plan_name, srvquery, endp2, num_p1, "prepare_and_describe", NULL);
+	if (res == NULL)
+		goto cleanup;
+	SC_set_Result(stmt, res);
 	if (!QR_command_maybe_successful(res))
 	{
 		SC_set_error(stmt, STMT_EXEC_ERROR, "Error while preparing parameters", func);
@@ -2601,16 +2653,10 @@ inolog("prep_params\n");
 		if (num_p2 > 0)
 		{
 			stmt->current_exec_param = num_pa;
-			ret = SendParseRequest(stmt, plan_name, srvquery, endp2 < 0 ? SQL_NTS : endp2, num_p1);
-			if (!ret)	goto cleanup;
-			if (!once_descr && !SendDescribeRequest(stmt, plan_name, TRUE))
+
+			res = ParseAndDescribeWithLibpq(stmt, plan_name, srvquery, endp2 < 0 ? SQL_NTS : endp2, num_p1, "prepare_and_describe", NULL);
+			if (res == NULL)
 				goto cleanup;
-			if (!(res = SendSyncAndReceive(stmt, NULL, "prepare_and_describe")))
-			{
-				SC_set_error(stmt, STMT_NO_RESPONSE, "commnication error while preapreand_describe", func);
-				CC_on_abort(conn, CONN_DEAD);
-				goto cleanup;
-			}
 			QR_Destructor(res);
 		}
 	}
@@ -2627,22 +2673,25 @@ cleanup:
 
 RETCODE	prepareParameters(StatementClass *stmt)
 {
+	QueryParse	query_org, *qp;
+	QueryBuild	query_crt, *qb;
+
 	switch (stmt->prepared)
 	{
-		QueryParse	query_org, *qp;
-		QueryBuild	query_crt, *qb;
 		case NOT_YET_PREPARED:
 		case ONCE_DESCRIBED:
+			break;
+		default:
+			return SQL_SUCCESS;
+	}
 
 inolog("prepareParameters\n");
-			qp = &query_org;
-			QP_initialize(qp, stmt);
-			qb = &query_crt;
-			if (QB_initialize(qb, qp->stmt_len, stmt, NULL) < 0)
-				return SQL_ERROR;
-			return prep_params(stmt, qp, qb, TRUE);
-	}
-	return SQL_SUCCESS;
+	qp = &query_org;
+	QP_initialize(qp, stmt);
+	qb = &query_crt;
+	if (QB_initialize(qb, qp->stmt_len, stmt, NULL) < 0)
+		return SQL_ERROR;
+	return prep_params_and_sync(stmt, qp, qb);
 }
 
 /*

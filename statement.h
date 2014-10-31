@@ -505,6 +505,8 @@ int		StartRollbackState(StatementClass *self);
 RETCODE		SetStatementSvp(StatementClass *self);
 RETCODE		DiscardStatementSvp(StatementClass *self, RETCODE, BOOL errorOnly);
 
+QResultClass *ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name, const char *query_p, Int4 qlen, Int2 num_params, const char *comment, QResultClass *res);
+
 BOOL		SendParseRequest(StatementClass *self, const char *name,
 			const char *query, Int4 qlen, Int2 num_params);
 BOOL		SyncParseRequest(ConnectionClass *conn);

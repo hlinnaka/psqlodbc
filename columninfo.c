@@ -21,6 +21,8 @@
 #include <string.h>
 #include "pgapifunc.h"
 
+#include <libpq-fe.h>
+
 ColumnInfoClass *
 CI_Constructor(void)
 {
@@ -49,7 +51,7 @@ CI_Destructor(ColumnInfoClass *self)
 
 
 /*
- *	Read in field descriptions.
+ *	Read in field descriptions from a RowDescription message.
  *	If self is not null, then also store the information.
  *	If self is null, then just read, don't store.
  */
@@ -117,6 +119,70 @@ CI_read_fields(ColumnInfoClass *self, ConnectionClass *conn)
 	}
 
 	return (SOCK_get_errcode(sock) == 0);
+}
+
+/*
+ *	Read in field descriptions from a libpq result set.
+ *	If self is not null, then also store the information.
+ *	If self is null, then just read, don't store.
+ */
+BOOL
+CI_read_fields_from_pgres(ColumnInfoClass *self, PGresult *pgres)
+{
+	CSTR		func = "CI_read_fields";
+	Int2		lf;
+	int			new_num_fields;
+	OID		new_adtid, new_relid = 0, new_attid = 0;
+	Int2		new_adtsize;
+	Int4		new_atttypmod = -1;
+	char	   *new_field_name;
+
+	/* at first read in the number of fields that are in the query */
+	new_num_fields = PQnfields(pgres);
+
+	mylog("num_fields = %d\n", new_num_fields);
+
+	if (self)
+	{
+		/* according to that allocate memory */
+		CI_set_num_fields(self, new_num_fields);
+		if (NULL == self->coli_array)
+			return FALSE;
+	}
+
+	/* now read in the descriptions */
+	for (lf = 0; lf < new_num_fields; lf++)
+	{
+		new_field_name = PQfname(pgres, lf);
+		new_relid = PQftable(pgres, lf);
+		new_attid = PQftablecol(pgres, lf);
+		new_adtid = PQftype(pgres, lf);
+		new_adtsize = PQfsize(pgres, lf);
+
+		mylog("READING ATTTYPMOD\n");
+		new_atttypmod = PQfmod(pgres, lf);
+
+		/* Subtract the header length */
+		switch (new_adtid)
+		{
+			case PG_TYPE_DATETIME:
+			case PG_TYPE_TIMESTAMP_NO_TMZONE:
+			case PG_TYPE_TIME:
+			case PG_TYPE_TIME_WITH_TMZONE:
+				break;
+			default:
+				new_atttypmod -= 4;
+		}
+		if (new_atttypmod < 0)
+			new_atttypmod = -1;
+
+		mylog("%s: fieldname='%s', adtid=%d, adtsize=%d, atttypmod=%d (rel,att)=(%d,%d)\n", func, new_field_name, new_adtid, new_adtsize, new_atttypmod, new_relid, new_attid);
+
+		if (self)
+			CI_set_field_info(self, lf, new_field_name, new_adtid, new_adtsize, new_atttypmod, new_relid, new_attid);
+	}
+
+	return TRUE;
 }
 
 
