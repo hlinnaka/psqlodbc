@@ -46,8 +46,7 @@ enum	QueryResultCode_
 
 enum
 {
-	FQR_FETCHING_TUPLES = 1L	/* is fetching tuples from db */
-	,FQR_REACHED_EOF = (1L << 1)	/* reached eof */
+	FQR_REACHED_EOF = (1L << 1)	/* reached eof */
 	,FQR_HAS_VALID_BASE = (1L << 2)
 	,FQR_NEEDS_SURVIVAL_CHECK = (1L << 3) /* check if the cursor is open */
 };
@@ -168,8 +167,6 @@ enum {
 #define QR_set_withhold(self)		(self->flags |= FQR_WITHHOLD)
 #define QR_set_permanent(self)		(self->flags |= FQR_HOLDPERMANENT)
 #define	QR_set_reached_eof(self)	(self->pstatus |= FQR_REACHED_EOF)
-#define	QR_set_fetching_tuples(self)	(self->pstatus |= FQR_FETCHING_TUPLES)
-#define	QR_set_no_fetching_tuples(self)	(self->pstatus &= ~FQR_FETCHING_TUPLES)
 #define QR_set_has_valid_base(self)	(self->pstatus |= FQR_HAS_VALID_BASE)
 #define QR_set_no_valid_base(self)	(self->pstatus &= ~FQR_HAS_VALID_BASE)
 #define QR_set_survival_check(self)	(self->pstatus |= FQR_NEEDS_SURVIVAL_CHECK)
@@ -201,7 +198,6 @@ do { \
 #define QR_get_cursor(self)				(self->cursor_name)
 #define QR_get_rowstart_in_cache(self)			(self->base)
 #define QR_once_reached_eof(self)	((self->pstatus & FQR_REACHED_EOF) != 0)
-#define QR_is_fetching_tuples(self)	((self->pstatus & FQR_FETCHING_TUPLES) != 0)
 #define	QR_has_valid_base(self)		(0 != (self->pstatus & FQR_HAS_VALID_BASE))
 #define	QR_needs_survival_check(self)		(0 != (self->pstatus & FQR_NEEDS_SURVIVAL_CHECK))
 

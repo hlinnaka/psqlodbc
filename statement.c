@@ -551,7 +551,7 @@ SC_forget_unnamed(StatementClass *self)
 		if (FALSE && !SC_IsExecuting(self))
 		{
 			QResultClass	*res = SC_get_Curres(self);
-			if (NULL != res && !res->dataFilled && !QR_is_fetching_tuples(res))
+			if (NULL != res && !res->dataFilled)
 				SC_set_Result(self, NULL);
 		}
 	}
@@ -2434,7 +2434,7 @@ SC_log_error(const char *func, const char *desc, const StatementClass *self)
 				qlog("                 fields=%p, backend_tuples=%p, tupleField=%d, conn=%p\n", QR_get_fields(res), res->backend_tuples, res->tupleField, res->conn);
 				qlog("                 fetch_count=%d, num_total_rows=%d, num_fields=%d, cursor='%s'\n", res->fetch_number, QR_get_num_total_tuples(res), res->num_fields, nullcheck(QR_get_cursor(res)));
 				qlog("                 message='%s', command='%s', notice='%s'\n", nullcheck(QR_get_message(res)), nullcheck(res->command), nullcheck(res->notice));
-				qlog("                 status=%d, inTuples=%d\n", QR_get_rstatus(res), QR_is_fetching_tuples(res));
+				qlog("                 status=%d\n", QR_get_rstatus(res));
 			}
 
 			/* Log the connection error if there is one */
@@ -2559,20 +2559,7 @@ inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_resul
 			cmdtag = PQcmdStatus(pgres);
 			mylog("command response: %s\n", cmdtag);
 			QR_set_command(res, cmdtag);
-			if (QR_is_fetching_tuples(res))
-			{
-				res->dataFilled = TRUE;
-				QR_set_no_fetching_tuples(res);
-				/* in case of FETCH, Portal Suspend never arrives */
-				if (strnicmp(cmdtag, "SELECT", 6) == 0)
-				{
-					mylog("%s: reached eof now\n", func);
-					QR_set_reached_eof(res);
-				}
-				else
-					res->recent_processed_row_count = atoi(PQcmdTuples(pgres));
-			}
-			else if (QR_command_successful(res))
+			if (QR_command_successful(res))
 				QR_set_rstatus(res, PORES_COMMAND_OK);
 			break;
 

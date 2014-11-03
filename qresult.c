@@ -85,7 +85,6 @@ QR_set_cursor(QResultClass *self, const char *name)
 		}
 		self->cursTuple = -1;
 		QR_set_no_cursor(self);
-		QR_set_no_fetching_tuples(self);
 	}
 	else if (NULL == name)
 		return;
@@ -679,9 +678,6 @@ inolog("!!%p->cursTup=%d total_read=%d\n", self, self->cursTuple, self->num_tota
 	QR_set_rowstart_in_cache(self, 0);
 	self->key_base = 0;
 
-	if (QR_is_fetching_tuples(self))
-		QR_set_reached_eof(self);
-
 	/*
 	 * Also fill in command tag. (Typically, it's SELECT, but can also be
 	 * a FETCH.)
@@ -1150,114 +1146,102 @@ inolog("tupleField=%p\n", self->tupleField);
 	self->tupleField = NULL;
 
 	fetch_size = 0;
-	if (!QR_is_fetching_tuples(self))
+
+	ci = &(conn->connInfo);
+	if (!QR_get_cursor(self))
 	{
-		ci = &(conn->connInfo);
-		if (!QR_get_cursor(self))
+		mylog("%s: ALL_ROWS: done, fcount = %d, fetch_number = %d\n", func, QR_get_num_total_tuples(self), fetch_number);
+		self->tupleField = NULL;
+		QR_set_reached_eof(self);
+		RETURN(-1)		/* end of tuples */
+	}
+
+	if (QR_get_rowstart_in_cache(self) >= num_backend_rows ||
+		QR_is_moving(self))
+	{
+		TupleField *tuple = self->backend_tuples;
+
+		/* not a correction */
+		/* Determine the optimum cache size.  */
+		if (ci->drivers.fetch_max % req_size == 0)
+			fetch_size = ci->drivers.fetch_max;
+		else if ((Int4)req_size < ci->drivers.fetch_max)
 		{
-			mylog("%s: ALL_ROWS: done, fcount = %d, fetch_number = %d\n", func, QR_get_num_total_tuples(self), fetch_number);
-			self->tupleField = NULL;
-			QR_set_reached_eof(self);
-			RETURN(-1)		/* end of tuples */
+			/*fetch_size = (ci->drivers.fetch_max / req_size + 1) * req_size;*/
+			fetch_size = (ci->drivers.fetch_max / req_size) * req_size;
 		}
+		else
+			fetch_size = req_size;
 
-		if (QR_get_rowstart_in_cache(self) >= num_backend_rows ||
-		    QR_is_moving(self))
-		{
-			TupleField *tuple = self->backend_tuples;
-
-			/* not a correction */
-			/* Determine the optimum cache size.  */
-			if (ci->drivers.fetch_max % req_size == 0)
-				fetch_size = ci->drivers.fetch_max;
-			else if ((Int4)req_size < ci->drivers.fetch_max)
-				/*fetch_size = (ci->drivers.fetch_max / req_size + 1) * req_size;*/
-				fetch_size = (ci->drivers.fetch_max / req_size) * req_size;
-			else
-				fetch_size = req_size;
-
-			self->cache_size = fetch_size;
-			/* clear obsolete tuples */
+		self->cache_size = fetch_size;
+		/* clear obsolete tuples */
 inolog("clear obsolete %d tuples\n", num_backend_rows);
-			ClearCachedRows(tuple, num_fields, num_backend_rows);
-			self->dataFilled = FALSE;
-			QR_stop_movement(self);
-			self->move_offset = 0;
-			QR_set_next_in_cache(self, offset + 1);
-		}
-		else
-		{
-			/*
-			 *	The rowset boundary doesn't match that of
-			 *	the inner resultset. Enlarge the resultset
-			 *	and fetch the rest of the rowset.
-			 */
-			/* The next fetch size is */
-			fetch_size = (Int4) (end_tuple - num_backend_rows);
-			if (fetch_size <= 0)
-			{
-				mylog("corrupted fetch_size end_tuple=%d <= cached_rows=%d\n", end_tuple, num_backend_rows);
-				RETURN(-1)
-			}
-			/* and enlarge the cache size */
-			self->cache_size += fetch_size;
-			offset = self->fetch_number;
-			QR_inc_next_in_cache(self);
-			boundary_adjusted = TRUE;
-		}
-
-		if (enlargeKeyCache(self, self->cache_size - num_backend_rows, "Out of memory while reading tuples") < 0)
-			RETURN(FALSE)
-		if (!QR_is_permanent(self)) /* Execute seems an invalid operation after COMMIT */
-		{
-			ExecuteRequest = TRUE;
-			if (!SendExecuteRequest(stmt, QR_get_cursor(self), fetch_size))
-				RETURN(FALSE)
-			if (!SendSyncRequest(conn))
-				RETURN(FALSE)
-		}
-		else
-		{
-			QResultClass	*res;
-			snprintf(fetch, sizeof(fetch),
-					 "fetch %d in \"%s\"",
-					 fetch_size, QR_get_cursor(self));
-
-			mylog("%s: sending actual fetch (%d) query '%s'\n", func, fetch_size, fetch);
-			if (!boundary_adjusted)
-			{
-				QR_set_rowstart_in_cache(self, offset);
-				QR_set_num_cached_rows(self, 0);
-				boundary_adjusted = TRUE;
-			}
-
-			/* don't read ahead for the next tuple (self) ! */
-			qi.row_size = self->cache_size;
-			qi.result_in = self;
-			qi.cursor = NULL;
-			res = CC_send_query(conn, fetch, &qi, 0, stmt);
-			if (!QR_command_maybe_successful(res))
-			{
-				if (!QR_get_message(self))
-					QR_set_message(self, "Error fetching next group.");
-				RETURN(FALSE)
-			}
-		}
-		internally_invoked = TRUE;
-		cur_fetch = 0;
-		QR_set_fetching_tuples(self);
+		ClearCachedRows(tuple, num_fields, num_backend_rows);
+		self->dataFilled = FALSE;
+		QR_stop_movement(self);
+		self->move_offset = 0;
+		QR_set_next_in_cache(self, offset + 1);
 	}
 	else
 	{
-		mylog("%s: inTuples = true, falling through: fcount = %d, fetch_number = %d\n", func, self->num_cached_rows, self->fetch_number);
-
 		/*
-		 * This is a pre-fetch (fetching rows right after query but
-		 * before any real SQLFetch() calls.  This is done so the
-		 * field attributes are available.
+		 *	The rowset boundary doesn't match that of
+		 *	the inner resultset. Enlarge the resultset
+		 *	and fetch the rest of the rowset.
 		 */
-		QR_set_next_in_cache(self, 0);
+		/* The next fetch size is */
+		fetch_size = (Int4) (end_tuple - num_backend_rows);
+		if (fetch_size <= 0)
+		{
+			mylog("corrupted fetch_size end_tuple=%d <= cached_rows=%d\n", end_tuple, num_backend_rows);
+			RETURN(-1)
+		}
+		/* and enlarge the cache size */
+		self->cache_size += fetch_size;
+		offset = self->fetch_number;
+		QR_inc_next_in_cache(self);
+		boundary_adjusted = TRUE;
 	}
+
+	if (enlargeKeyCache(self, self->cache_size - num_backend_rows, "Out of memory while reading tuples") < 0)
+		RETURN(FALSE)
+	if (!QR_is_permanent(self)) /* Execute seems an invalid operation after COMMIT */
+	{
+		ExecuteRequest = TRUE;
+		if (!SendExecuteRequest(stmt, QR_get_cursor(self), fetch_size))
+			RETURN(FALSE)
+		if (!SendSyncRequest(conn))
+			RETURN(FALSE)
+	}
+	else
+	{
+		QResultClass	*res;
+		snprintf(fetch, sizeof(fetch),
+				 "fetch %d in \"%s\"",
+				 fetch_size, QR_get_cursor(self));
+
+		mylog("%s: sending actual fetch (%d) query '%s'\n", func, fetch_size, fetch);
+		if (!boundary_adjusted)
+		{
+			QR_set_rowstart_in_cache(self, offset);
+			QR_set_num_cached_rows(self, 0);
+			boundary_adjusted = TRUE;
+		}
+
+		/* don't read ahead for the next tuple (self) ! */
+		qi.row_size = self->cache_size;
+		qi.result_in = self;
+		qi.cursor = NULL;
+		res = CC_send_query(conn, fetch, &qi, 0, stmt);
+		if (!QR_command_maybe_successful(res))
+		{
+			if (!QR_get_message(self))
+				QR_set_message(self, "Error fetching next group.");
+			RETURN(FALSE)
+		}
+	}
+	internally_invoked = TRUE;
+	cur_fetch = 0;
 
 	if (!boundary_adjusted)
 	{
@@ -1303,22 +1287,6 @@ inolog("id='%c' response_length=%d\n", id, response_length);
 
 				qlog("    [ fetched %d rows ]\n", self->num_total_read);
 				mylog("_%s: 'C' fetch_total = %d & this_fetch = %d\n", func, self->num_total_read, self->num_cached_rows);
-				if (QR_is_fetching_tuples(self))
-				{
-					self->dataFilled = TRUE;
-					QR_set_no_fetching_tuples(self);
-					if (internally_invoked)
-					{
-						if (ExecuteRequest) /* Execute completed without accepting Portal Suspend */
-							reached_eof_now = TRUE;
-						else if (cur_fetch < fetch_size)
-							reached_eof_now = TRUE;
-					}
-					else if (self->num_cached_rows < self->cache_size)
-						reached_eof_now = TRUE;
-					else if (!QR_get_cursor(self))
-						reached_eof_now = TRUE;
-				}
 				if (reached_eof_now)
 				{
 					/* last row from cache */
@@ -1347,16 +1315,10 @@ inolog("id='%c' response_length=%d\n", id, response_length);
 
 			case 'Z':	/* Ready for query */
 				EatReadyForQuery(conn);
-				if (QR_is_fetching_tuples(self))
-				{
-					reached_eof_now = TRUE;
-					QR_set_no_fetching_tuples(self);
-				}
 				loopend = rcvend = TRUE;
 				break;
 			case 's':	/* portal suspend */
 				mylog("portal suspend");
-				QR_set_no_fetching_tuples(self);
 				self->dataFilled = TRUE;
 				mylog("_%s: 's' fetch_total = %d & this_fetch = %d\n", func, self->num_total_read, self->num_cached_rows);
 				break;
@@ -1395,11 +1357,6 @@ else
 			{
 				EatReadyForQuery(conn);
 				qlog("%s discarded data until ReadyForQuery comes\n", __FUNCTION__);
-				if (QR_is_fetching_tuples(self))
-				{
-					reached_eof_now = TRUE;
-					QR_set_no_fetching_tuples(self);
-				}
 				break;
 			}
 		}
@@ -1420,7 +1377,6 @@ else
 	if (!ret)
 		RETURN(ret)
 
-	if (!QR_is_fetching_tuples(self))
 	{
 		SQLLEN	start_idx = 0;
 

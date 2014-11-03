@@ -2359,12 +2359,13 @@ inolog("Discarded the first SAVEPOINT\n");
 				}
 				else
 				{				/* next fetch, so reuse an existing result */
+					const char *cursor = res->cursor_name;
 
 					/*
 					 * called from QR_next_tuple and must return
 					 * immediately.
 					 */
-					if (!CC_from_PGresult(res, stmt, self, NULL, pgres))
+					if (!CC_from_PGresult(res, stmt, self, cursor, pgres))
 					{
 						retres = NULL;
 						break;
