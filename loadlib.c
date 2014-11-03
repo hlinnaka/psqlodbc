@@ -16,9 +16,6 @@
 #endif /* WIN32 */
 
 #include "loadlib.h"
-#ifdef	RESET_CRYPTO_CALLBACKS
-#include <openssl/ssl.h>
-#endif /* RESET_CRYPTO_CALLBACKS */
 #include <libpq-fe.h>
 #include "pgenlist.h"
 
@@ -26,10 +23,6 @@
 #ifdef  _MSC_VER
 #pragma comment(lib, "Delayimp")
 #pragma comment(lib, "libpq")
-#pragma comment(lib, "ssleay32")
-#ifdef	RESET_CRYPTO_CALLBACKS
-#pragma comment(lib, "libeay32")
-#endif /* RESET_CRYPTO_CALLBACKS */
 #ifdef	_HANDLE_ENLIST_IN_DTC_
 #ifdef	UNICODE_SUPPORT
 #pragma comment(lib, "pgenlist")
@@ -41,10 +34,6 @@
 // Please add the equivalent linker options using command line etc.
 #if (_MSC_VER == 1200) && defined(DYNAMIC_LOAD) // VC6.0
 #pragma comment(linker, "/Delayload:libpq.dll")
-#pragma comment(linker, "/Delayload:ssleay32.dll")
-#ifdef	RESET_CRYPTO_CALLBACKS
-#pragma comment(linker, "/Delayload:libeay32.dll")
-#endif /* RESET_CRYPTO_CALLBACKS */
 #ifdef	UNICODE_SUPPORT
 #pragma comment(linker, "/Delayload:pgenlist.dll")
 #else
@@ -108,8 +97,8 @@ CSTR	checkproc2 = "PQconninfoParse";
 static int	sslverify_available = -1;
 
 #if defined(_MSC_DELAY_LOAD_IMPORT)
-static BOOL	loaded_libpq = FALSE, loaded_ssllib = FALSE;
-static BOOL	loaded_pgenlist = FALSE, loaded_gssapi = FALSE;
+static BOOL	loaded_libpq = FALSE;
+static BOOL	loaded_pgenlist = FALSE;
 /*
  *	Load psqlodbc path based libpq dll.
  */
@@ -138,7 +127,6 @@ static HMODULE MODULE_load_from_psqlodbc_path(const char *module_name)
 /*
  *	Error hook function for delay load import.
  *	Try to load psqlodbc path based libpq.
- *	Load alternative ssl library SSLEAY32 or LIBSSL32.
  */
 #if (_MSC_VER < 1300)
 extern PfnDliHook __pfnDliFailureHook;
@@ -154,7 +142,6 @@ DliErrorHook(unsigned	dliNotify,
 {
 	HMODULE	hmodule = NULL;
 	int	i;
-	static const char * const libarray[] = {"libssl32", "ssleay32"};
 
 	mylog("Dli%sHook %s Notify=%d\n", (dliFailLoadLib == dliNotify || dliFailGetProc == dliNotify) ? "Error" : "Notify", NULL != pdli->szDll ? pdli->szDll : pdli->dlp.szProcName, dliNotify);
 	switch (dliNotify)
@@ -189,31 +176,6 @@ inolog("connect_withparam_available=%d\n", connect_withparam_available);
 				if (hmodule = MODULE_load_from_psqlodbc_path(pgenlist), NULL == hmodule)
 					hmodule = LoadLibrary(pgenlist);
 			}
-#ifdef	USE_GSS
-			else if (_strnicmp(pdli->szDll, gssapilib, strlen(gssapilib)) == 0)
-			{
-				if (hmodule = GetModuleHandle(gssapilib), NULL == hmodule)
-				{
-					if (hmodule = MODULE_load_from_psqlodbc_path(gssapilib), NULL == hmodule)
-					{
-						if (hmodule = LoadLibrary(gssapilib), NULL != hmodule)
-							loaded_gssapi = TRUE;
-					}
-					else
-						loaded_gssapi = TRUE;
-				}
-			}
-#endif /* USE_GSS */
-			else if (0 == _stricmp(pdli->szDll, libarray[0]) ||
-				 0 == _stricmp(pdli->szDll, libarray[1]))
-			{
-				mylog("getting alternative ssl library instead of %s\n", pdli->szDll);
-				for (i = 0; i < sizeof(libarray) / sizeof(const char * const); i++)
-				{
-					if (hmodule = GetModuleHandle(libarray[i]), NULL != hmodule)
-						break;
-				}
-			}
 			break;
 	}
 	return (FARPROC) hmodule;
@@ -221,13 +183,7 @@ inolog("connect_withparam_available=%d\n", connect_withparam_available);
 
 /*
  *	unload delay loaded libraries.
- *
- *	Openssl Library nmake defined
- *	ssleay32.dll is vc make, libssl32.dll is mingw make.
  */
-#ifndef SSL_DLL
-#define SSL_DLL "SSLEAY32.dll"
-#endif /* SSL_DLL */
 
 typedef BOOL (WINAPI *UnloadFunc)(LPCSTR);
 void CleanupDelayLoadedDLLs(void)
@@ -255,20 +211,10 @@ void CleanupDelayLoadedDLLs(void)
 		success = (*func)(libpqdll);
 		mylog("%s unload success=%d\n", libpqdll, success);
 	}
-	if (loaded_ssllib)
-	{
-		success = (*func)(SSL_DLL);
-		mylog("ssldll unload success=%d\n", success);
-	}
 	if (loaded_pgenlist)
 	{
 		success = (*func)(pgenlistdll);
 		mylog("%s unload success=%d\n", pgenlistdll, success);
-	}
-	if (loaded_gssapi)
-	{
-		success = (*func)(gssapidll);
-		mylog("%s unload success=%d\n", gssapidll, success);
 	}
 	return;
 }

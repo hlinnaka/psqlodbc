@@ -297,7 +297,6 @@ inolog("hlen=%d", hlen);
 			INI_SHOWSYSTEMTABLES "=%s;"
 			INI_CONNSETTINGS "=%s;"
 			INI_FETCH "=%d;"
-			INI_SOCKET "=%d;"
 			INI_UNKNOWNSIZES "=%d;"
 			INI_MAXVARCHARSIZE "=%d;"
 			INI_MAXLONGVARCHARSIZE "=%d;"
@@ -334,7 +333,6 @@ inolog("hlen=%d", hlen);
 			,ci->show_system_tables
 			,encoded_item
 			,ci->drivers.fetch_max
-			,ci->drivers.socket_buffersize
 			,ci->drivers.unknown_sizes
 			,ci->drivers.max_varchar_size
 			,ci->drivers.max_longvarchar_size
@@ -434,7 +432,6 @@ inolog("hlen=%d", hlen);
 		olen = snprintf(&connect_string[hlen], nlen, ";"
 				ABBR_CONNSETTINGS "=%s;"
 				ABBR_FETCH "=%d;"
-				ABBR_SOCKET "=%d;"
 				ABBR_MAXVARCHARSIZE "=%d;"
 				ABBR_MAXLONGVARCHARSIZE "=%d;"
 				INI_INT8AS "=%d;"
@@ -446,7 +443,6 @@ inolog("hlen=%d", hlen);
 				INI_ABBREVIATE "=%02x%x",
 				encoded_item,
 				ci->drivers.fetch_max,
-				ci->drivers.socket_buffersize,
 				ci->drivers.max_varchar_size,
 				ci->drivers.max_longvarchar_size,
 				ci->int8_as,
@@ -718,8 +714,6 @@ copyCommonAttributes(ConnInfo *ci, const char *attribute, const char *value)
 
 	if (stricmp(attribute, INI_FETCH) == 0 || stricmp(attribute, ABBR_FETCH) == 0)
 		ci->drivers.fetch_max = atoi(value);
-	else if (stricmp(attribute, INI_SOCKET) == 0 || stricmp(attribute, ABBR_SOCKET) == 0)
-		ci->drivers.socket_buffersize = atoi(value);
 	else if (stricmp(attribute, INI_DEBUG) == 0 || stricmp(attribute, ABBR_DEBUG) == 0)
 		ci->drivers.debug = atoi(value);
 	else if (stricmp(attribute, INI_COMMLOG) == 0 || stricmp(attribute, ABBR_COMMLOG) == 0)
@@ -754,9 +748,8 @@ copyCommonAttributes(ConnInfo *ci, const char *attribute, const char *value)
 	else
 		found = FALSE;
 
-	mylog("%s: A7=%d;A8=%d;A9=%d;B0=%d;B1=%d;B2=%d;B3=%d;B6=%d;B7=%d;B8=%d;B9=%d;C0=%d;C1=%d;C2=%s", func,
+	mylog("%s: A7=%d;A9=%d;B0=%d;B1=%d;B2=%d;B3=%d;B6=%d;B7=%d;B8=%d;B9=%d;C0=%d;C1=%d;C2=%s", func,
 		  ci->drivers.fetch_max,
-		  ci->drivers.socket_buffersize,
 		  ci->drivers.unknown_sizes,
 		  ci->drivers.max_varchar_size,
 		  ci->drivers.max_longvarchar_size,
@@ -1360,14 +1353,6 @@ getCommonDefaults(const char *section, const char *filename, ConnInfo *ci)
 	}
 	else if (inst_position)
 		comval->fetch_max = FETCH_MAX;
-
-	/* Socket Buffersize is stored in driver section */
-	SQLGetPrivateProfileString(section, INI_SOCKET, "",
-							   temp, sizeof(temp), filename);
-	if (temp[0])
-		comval->socket_buffersize = atoi(temp);
-	else if (inst_position)
-		comval->socket_buffersize = SOCK_BUFFER_SIZE;
 
 	/* Debug is stored in the driver section */
 	SQLGetPrivateProfileString(section, INI_DEBUG, "",

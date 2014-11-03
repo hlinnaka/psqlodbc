@@ -19,7 +19,7 @@ AM_LDFLAGS = -module -no-undefined -avoid-version
 psqlodbca_la_SOURCES = \
 	info.c bind.c columninfo.c connection.c convert.c drvconn.c \
 	environ.c execute.c lobj.c misc.c options.c \
-	pgtypes.c psqlodbc.c qresult.c results.c socket.c parse.c \
+	pgtypes.c psqlodbc.c qresult.c results.c parse.c \
 	statement.c tuple.c dlg_specific.c loadlib.c \
 	multibyte.c odbcapi.c descriptor.c \
 	odbcapi30.c pgapi30.c mylog.c \
@@ -27,7 +27,7 @@ psqlodbca_la_SOURCES = \
 	bind.h catfunc.h columninfo.h connection.h convert.h \
 	descriptor.h dlg_specific.h environ.h \
 	lobj.h misc.h multibyte.h pgapifunc.h pgtypes.h \
-	psqlodbc.h qresult.h resource.h socket.h statement.h tuple.h \
+	psqlodbc.h qresult.h resource.h statement.h tuple.h \
 	version.h loadlib.h pgenlist.h mylog.h xalibname.h
 
 psqlodbcw_la_SOURCES = $(psqlodbca_la_SOURCES) \
@@ -43,7 +43,6 @@ EXTRA_DIST = license.txt readme.txt readme_winbuild.txt \
         psqlodbc.reg psqlodbc.dsp psqlodbc.vcproj \
         psqlodbc.sln msdtc_enlist.cpp pgxalib.cpp xalibname.c \
         pgxalib.def odbc.sql odbc-drop.sql \
-	sspisvcs.c sspisvcs.h gsssvcs.c gsssvcs.h \
 \
 	docs/config-opt.html \
 	docs/config.html \

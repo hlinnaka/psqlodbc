@@ -1365,20 +1365,12 @@ SC_create_errorinfo(const StatementClass *self)
 
 	if (conn && !msgend)
 	{
-		SocketClass *sock = conn->sock;
-		const char *sockerrmsg;
-
 		if (!resmsg && (wmsg = CC_get_errormsg(conn)) && wmsg[0] != '\0')
 		{
 			pos = strlen(msg);
 			snprintf(&msg[pos], sizeof(msg) - pos, ";\n%s", CC_get_errormsg(conn));
 		}
 
-		if (sock && NULL != (sockerrmsg = SOCK_get_errmsg(sock)) && '\0' != sockerrmsg[0])
-		{
-			pos = strlen(msg);
-			snprintf(&msg[pos], sizeof(msg) - pos, ";\n%s", sockerrmsg);
-		}
 		ermsg = msg;
 	}
 	pgerror = ER_Constructor(self->__error_number, ermsg);
@@ -2190,7 +2182,7 @@ inolog("!!%p->miscinfo=%x res=%p\n", self, self->miscinfo, res);
 	else
 	{
 		/* Bad Error -- The error message will be in the Connection */
-		if (!conn->sock)
+		if (!conn->pqconn)
 			SC_set_error(self, STMT_BAD_ERROR, CC_get_errormsg(conn), func);
 		else if (self->statement_type == STMT_TYPE_CREATE)
 		{
@@ -2544,7 +2536,7 @@ inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_resul
 	if (!res)
 		newres = res = QR_Constructor();
 
-	pgres = PQexecPrepared(conn->sock->pqconn,
+	pgres = PQexecPrepared(conn->pqconn,
 						   plan_name, 	/* portal name == plan name */
 						   nParams,
 						   (const char **) paramValues, paramLengths, paramFormats,
@@ -2627,7 +2619,6 @@ ParseWithLibpq(StatementClass *stmt, const char *plan_name,
 {
 	CSTR	func = "ParseWithLibpq";
 	ConnectionClass	*conn = SC_get_conn(stmt);
-	SocketClass	*sock = conn->sock;
 	Int4		sta_pidx = -1, end_pidx = -1;
 	char	   *query = NULL;
 	Oid		   *paramTypes = NULL;
@@ -2719,7 +2710,7 @@ mylog("sta_pidx=%d end_pidx=%d num_p=%d\n", sta_pidx, end_pidx, num_params);
 		conn->unnamed_prepared_stmt = NULL;
 
 	/* Prepare */
-	pgres = PQprepare(sock->pqconn, plan_name, query, num_params, paramTypes);
+	pgres = PQprepare(conn->pqconn, plan_name, query, num_params, paramTypes);
 	if (PQresultStatus(pgres) != PGRES_COMMAND_OK)
 		goto cleanup;
 
@@ -2757,7 +2748,6 @@ ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
 {
 	CSTR	func = "ParseAndDescribeWithLibpq";
 	ConnectionClass	*conn = SC_get_conn(stmt);
-	SocketClass	*sock = conn->sock;
 	char	   *query = NULL;
 	Oid		   *paramTypes = NULL;
 	BOOL		retval = FALSE;
@@ -2785,7 +2775,7 @@ ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
 	/* Describe */
 	mylog("%s: describing plan_name=%s\n", func, plan_name);
 
-	pgres = PQdescribePrepared(sock->pqconn, plan_name);
+	pgres = PQdescribePrepared(conn->pqconn, plan_name);
 	if (PQresultStatus(pgres) != PGRES_COMMAND_OK)
 	{
 		/* skip the unexpected response if possible */

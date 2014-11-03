@@ -109,7 +109,6 @@ void	copy_globals(GLOBAL_VALUES *to, const GLOBAL_VALUES *from)
 	***/
 	NAME_TO_NAME(to->drivername, from->drivername);
 	CORR_VALCPY(fetch_max);
-	CORR_VALCPY(socket_buffersize);
 	CORR_VALCPY(unknown_sizes);
 	CORR_VALCPY(max_varchar_size);
 	CORR_VALCPY(max_longvarchar_size);
@@ -129,7 +128,7 @@ void	copy_globals(GLOBAL_VALUES *to, const GLOBAL_VALUES *from)
 	CORR_STRCPY(protocol);
 	NAME_TO_NAME(to->conn_settings, from->conn_settings);
 
-	mylog("copy_globals driver=%s socket_buffersize=%d\n", SAFE_NAME(to->drivername), to->socket_buffersize);
+	mylog("copy_globals driver=%s\n", SAFE_NAME(to->drivername));
 }
 #undef	CORR_STRCPY
 #undef	CORR_VALCPY
@@ -195,9 +194,6 @@ DllMain(HANDLE hInst, ULONG ul_reason_for_call, LPVOID lpReserved)
 
 		case DLL_PROCESS_DETACH:
 			mylog("DETACHING PROCESS\n");
-#ifdef	USE_SSPI
-			LeaveSSPIService();
-#endif /* USE_SSPI */
 			CleanupDelayLoadedDLLs();
 			/* my(q)log is unavailable from here */
 			finalize_global_cs();

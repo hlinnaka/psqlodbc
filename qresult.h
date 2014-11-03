@@ -14,7 +14,6 @@
 #include "libpq-fe.h"
 
 #include "connection.h"
-#include "socket.h"
 #include "columninfo.h"
 #include "tuple.h"
 
@@ -219,7 +218,6 @@ do { \
 QResultClass	*QR_Constructor(void);
 void		QR_Destructor(QResultClass *self);
 TupleField	*QR_AddNew(QResultClass *self);
-BOOL		QR_get_tupledata(QResultClass *self, BOOL binary);
 int		QR_next_tuple(QResultClass *self, StatementClass *);
 int			QR_close(QResultClass *self);
 void		QR_on_close_cursor(QResultClass *self);

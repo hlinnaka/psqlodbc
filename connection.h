@@ -386,7 +386,7 @@ struct ConnectionClass_
 	StatementClass	**stmts;
 	Int2		num_stmts;
 	Int2		ncursors;
-	SocketClass	*sock;
+	PGconn	   *pqconn;
 	Int4		lobj_type;
 	Int2		coli_allocated;
 	Int2		ntables;
@@ -447,7 +447,6 @@ struct ConnectionClass_
 
 /* Accessor functions */
 #define CC_get_env(x)				((x)->henv)
-#define CC_get_socket(x)			(x->sock)
 #define CC_get_database(x)			(x->connInfo.database)
 #define CC_get_server(x)			(x->connInfo.server)
 #define CC_get_DSN(x)				(x->connInfo.dsn)
@@ -534,12 +533,6 @@ const char	*CC_get_current_schema(ConnectionClass *conn);
 int             CC_mark_a_object_to_discard(ConnectionClass *conn, int type, const char *plan);
 int             CC_discard_marked_objects(ConnectionClass *conn);
 
-int	handle_error_message(ConnectionClass *self, char *msgbuf, size_t buflen,
-		 char *sqlstate, const char *comment, QResultClass *res);
-int	handle_notice_message(ConnectionClass *self, char *msgbuf, size_t buflen,
-		 char *sqlstate, const char *comment, QResultClass *res);
-int		EatReadyForQuery(ConnectionClass *self);
-void		getParameterValues(ConnectionClass *self);
 int		CC_get_max_idlen(ConnectionClass *self);
 
 const		char *CurrCat(const ConnectionClass *self);
