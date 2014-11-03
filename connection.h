@@ -542,8 +542,6 @@ int		EatReadyForQuery(ConnectionClass *self);
 void		getParameterValues(ConnectionClass *self);
 int		CC_get_max_idlen(ConnectionClass *self);
 
-BOOL		SendSyncRequest(ConnectionClass *self);
-
 const		char *CurrCat(const ConnectionClass *self);
 const		char *CurrCatString(const ConnectionClass *self);
 

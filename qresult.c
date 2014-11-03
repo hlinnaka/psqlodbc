@@ -907,7 +907,7 @@ int
 QR_next_tuple(QResultClass *self, StatementClass *stmt)
 {
 	CSTR	func = "QR_next_tuple";
-	int			id, ret = TRUE;
+	int			ret = TRUE;
 	SocketClass *sock;
 
 	/* Speed up access */
@@ -918,20 +918,15 @@ QR_next_tuple(QResultClass *self, StatementClass *stmt)
 	SQLLEN		offset = 0, end_tuple;
 	char		boundary_adjusted = FALSE;
 	TupleField *the_tuples = self->backend_tuples;
-
-	/* ERROR_MSG_LENGTH is sufficient */
-	char msgbuffer[ERROR_MSG_LENGTH + 1];
+	QResultClass	*res;
 
 	/* QR_set_command() dups this string so doesn't need static */
-	char		cmdbuffer[ERROR_MSG_LENGTH + 1];
 	char		fetch[128];
 	QueryInfo	qi;
 	ConnectionClass	*conn;
 	ConnInfo   *ci = NULL;
-	BOOL		rcvend, loopend, kill_conn, internally_invoked = FALSE;
+	BOOL		kill_conn, internally_invoked = FALSE;
 	BOOL		reached_eof_now = FALSE, curr_eof; /* detecting EOF is pretty important */
-	BOOL		ExecuteRequest = FALSE;
-	Int4		response_length;
 
 inolog("Oh %p->fetch_number=%d\n", self, self->fetch_number);
 inolog("in total_read=%d cursT=%d currT=%d ad=%d total=%d rowsetSize=%d\n", self->num_total_read, self->cursTuple, stmt ? stmt->currTuple : -1, self->ad_count, QR_get_num_total_tuples(self), self->rowset_size_include_ommitted);
@@ -1205,49 +1200,32 @@ inolog("clear obsolete %d tuples\n", num_backend_rows);
 
 	if (enlargeKeyCache(self, self->cache_size - num_backend_rows, "Out of memory while reading tuples") < 0)
 		RETURN(FALSE)
-	if (!QR_is_permanent(self)) /* Execute seems an invalid operation after COMMIT */
-	{
-		ExecuteRequest = TRUE;
-		if (!SendExecuteRequest(stmt, QR_get_cursor(self), fetch_size))
-			RETURN(FALSE)
-		if (!SendSyncRequest(conn))
-			RETURN(FALSE)
-	}
-	else
-	{
-		QResultClass	*res;
-		snprintf(fetch, sizeof(fetch),
-				 "fetch %d in \"%s\"",
-				 fetch_size, QR_get_cursor(self));
 
-		mylog("%s: sending actual fetch (%d) query '%s'\n", func, fetch_size, fetch);
-		if (!boundary_adjusted)
-		{
-			QR_set_rowstart_in_cache(self, offset);
-			QR_set_num_cached_rows(self, 0);
-			boundary_adjusted = TRUE;
-		}
+	/* Send a FETCH command to get more rows */
+	snprintf(fetch, sizeof(fetch),
+			 "fetch %d in \"%s\"",
+			 fetch_size, QR_get_cursor(self));
 
-		/* don't read ahead for the next tuple (self) ! */
-		qi.row_size = self->cache_size;
-		qi.result_in = self;
-		qi.cursor = NULL;
-		res = CC_send_query(conn, fetch, &qi, 0, stmt);
-		if (!QR_command_maybe_successful(res))
-		{
-			if (!QR_get_message(self))
-				QR_set_message(self, "Error fetching next group.");
-			RETURN(FALSE)
-		}
-	}
-	internally_invoked = TRUE;
-	cur_fetch = 0;
-
+	mylog("%s: sending actual fetch (%d) query '%s'\n", func, fetch_size, fetch);
 	if (!boundary_adjusted)
 	{
 		QR_set_rowstart_in_cache(self, offset);
 		QR_set_num_cached_rows(self, 0);
 	}
+
+	/* don't read ahead for the next tuple (self) ! */
+	qi.row_size = self->cache_size;
+	qi.result_in = self;
+	qi.cursor = NULL;
+	res = CC_send_query(conn, fetch, &qi, 0, stmt);
+	if (!QR_command_maybe_successful(res))
+	{
+		if (!QR_get_message(self))
+			QR_set_message(self, "Error fetching next group.");
+		RETURN(FALSE)
+	}
+	internally_invoked = TRUE;
+	cur_fetch = 0;
 
 	sock = CC_get_socket(conn);
 	self->tupleField = NULL;
@@ -1256,111 +1234,10 @@ inolog("clear obsolete %d tuples\n", num_backend_rows);
 
 	curr_eof = reached_eof_now = (QR_once_reached_eof(self) && self->cursTuple >= (Int4)self->num_total_read);
 inolog("reached_eof_now=%d\n", reached_eof_now);
-if (ExecuteRequest)
-{
-	for (kill_conn = loopend = rcvend = FALSE; !loopend;)
-	{
-		id = SOCK_get_id(sock);
-		if (0 != SOCK_get_errcode(sock))
-			break;
-		response_length = SOCK_get_response_length(sock);
-		if (0 != SOCK_get_errcode(sock))
-			break;
-inolog("id='%c' response_length=%d\n", id, response_length);
-		switch (id)
-		{
-			case 'D':			/* Tuples in ASCII format  */
 
-				if (!QR_get_tupledata(self, FALSE))
-				{
-					ret = FALSE;
-					loopend = TRUE;
-				}
-				cur_fetch++;
-				break;			/* continue reading */
-
-			case 'C':			/* End of tuple list */
-				SOCK_get_string(sock, cmdbuffer, ERROR_MSG_LENGTH);
-				QR_set_command(self, cmdbuffer);
-
-				mylog("end of tuple list -- setting inUse to false: this = %p %s\n", self, cmdbuffer);
-
-				qlog("    [ fetched %d rows ]\n", self->num_total_read);
-				mylog("_%s: 'C' fetch_total = %d & this_fetch = %d\n", func, self->num_total_read, self->num_cached_rows);
-				if (reached_eof_now)
-				{
-					/* last row from cache */
-					/* We are done because we didn't even get CACHE_SIZE tuples */
-					mylog("%s: backend_rows < CACHE_SIZE: brows = %d, cache_size = %d\n", func, num_backend_rows, self->cache_size);
-				}
-				if (!internally_invoked)
-					loopend = rcvend = TRUE;
-				break;
-
-			case 'E':			/* Error */
-				handle_error_message(conn, msgbuffer, sizeof(msgbuffer), self->sqlstate, "next_tuple", self);
-
-				mylog("ERROR from backend in next_tuple: '%s'\n", msgbuffer);
-				qlog("ERROR from backend in next_tuple: '%s'\n", msgbuffer);
-
-				if (!internally_invoked)
-					loopend = rcvend = TRUE;
-				ret = FALSE;
-				break;
-
-			case 'N':			/* Notice */
-				handle_notice_message(conn, cmdbuffer, sizeof(cmdbuffer), self->sqlstate, "next_tuple", self);
-				qlog("NOTICE from backend in next_tuple: '%s'\n", msgbuffer);
-				continue;
-
-			case 'Z':	/* Ready for query */
-				EatReadyForQuery(conn);
-				loopend = rcvend = TRUE;
-				break;
-			case 's':	/* portal suspend */
-				mylog("portal suspend");
-				self->dataFilled = TRUE;
-				mylog("_%s: 's' fetch_total = %d & this_fetch = %d\n", func, self->num_total_read, self->num_cached_rows);
-				break;
-			case 'T':
-			default:
-				/* skip the unexpected response if possible */
-				if (response_length >= 0)
-					break;
-				/* this should only happen if the backend
-					* dumped core ??? */
-				mylog("%s: Unexpected result from backend: id = '%c' (%d)\n", func, id, id);
-				qlog("%s: Unexpected result from backend: id = '%c' (%d)\n", func, id, id);
-				QR_set_message(self, "Unexpected result from backend. It probably crashed");
-				loopend = kill_conn = TRUE;
-		}
-		if (0 != SOCK_get_errcode(sock))
-			break;
-	}
-}
-else
-{
 	mylog("_%s: PGresult: fetch_total = %d & this_fetch = %d\n", func, self->num_total_read, self->num_cached_rows);
 	mylog("_%s: PGresult: cursTuple = %d\n", func, self->cursTuple);
-}
-	if (!kill_conn && !rcvend && 0 == SOCK_get_errcode(sock))
-	{
-		for (;;) /* discard the result until ReadyForQuery comes */
-		{
-			id = SOCK_get_id(sock);
-			if (0 != SOCK_get_errcode(sock))
-				break;
-			response_length = SOCK_get_response_length(sock);
-			if (0 != SOCK_get_errcode(sock))
-				break;
-			if ('Z' == id) /* ready for query */
-			{
-				EatReadyForQuery(conn);
-				qlog("%s discarded data until ReadyForQuery comes\n", __FUNCTION__);
-				break;
-			}
-		}
-	}
+
 	if (0 != SOCK_get_errcode(sock))
 	{
 		if (QR_command_maybe_successful(self))
