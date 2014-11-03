@@ -516,7 +516,7 @@ void		handle_pgres_error(ConnectionClass *self, const PGresult *pgres,
 				   const char *comment,
 				   QResultClass *res, BOOL fatal);
 void		CC_clear_error(ConnectionClass *self);
-int		CC_send_function(ConnectionClass *conn, int fnid, void *result_buf, int *actual_result_len, int result_is_int, LO_ARG *argv, int nargs);
+int		CC_send_function(ConnectionClass *conn, const char *fn_name, void *result_buf, int *actual_result_len, int result_is_int, LO_ARG *argv, int nargs);
 char		CC_send_settings(ConnectionClass *self);
 /*
 char		*CC_create_errormsg(ConnectionClass *self);

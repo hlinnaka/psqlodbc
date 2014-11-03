@@ -2504,171 +2504,105 @@ cleanup:
 	return retres;
 }
 
+#define MAX_SEND_FUNC_ARGS	3
+static const char *func_param_str[MAX_SEND_FUNC_ARGS + 1] =
+{
+	"()",
+	"($1)",
+	"($1, $2)",
+	"($1, $2, $3)"
+};
+
 
 int
-CC_send_function(ConnectionClass *self, int fnid, void *result_buf, int *actual_result_len, int result_is_int, LO_ARG *args, int nargs)
+CC_send_function(ConnectionClass *self, const char *fn_name, void *result_buf, int *actual_result_len, int result_is_int, LO_ARG *args, int nargs)
 {
-	CSTR	func = "CC_send_function";
-	char		id,
-				done;
 	SocketClass *sock = self->sock;
 
-	/* ERROR_MSG_LENGTH is sufficient */
-	char msgbuffer[ERROR_MSG_LENGTH + 1];
 	int			i;
-	int			ret = TRUE;
-	UInt4			leng;
-	Int4			response_length;
+	int			ret = FALSE;
 	int			func_cs_count = 0;
-	BOOL			resultResponse;
+	char		sqlbuffer[1000];
+	PGresult   *pgres = NULL;
+	Oid			paramTypes[MAX_SEND_FUNC_ARGS];
+	char	   *paramValues[MAX_SEND_FUNC_ARGS];
+	int			paramLengths[MAX_SEND_FUNC_ARGS];
+	int			paramFormats[MAX_SEND_FUNC_ARGS];
+	Int4		intParamBufs[MAX_SEND_FUNC_ARGS];
 
-	mylog("send_function(): conn=%p, fnid=%d, result_is_int=%d, nargs=%d\n", self, fnid, result_is_int, nargs);
-
-	if (!self->sock)
-	{
-		CC_set_error(self, CONNECTION_COULD_NOT_SEND, "Could not send function(connection dead)", func);
-		CC_on_abort(self, CONN_DEAD);
-		return FALSE;
-	}
-
-	if (SOCK_get_errcode(sock) != 0)
-	{
-		CC_set_error(self, CONNECTION_COULD_NOT_SEND, "Could not send function to backend", func);
-		CC_on_abort(self, CONN_DEAD);
-		return FALSE;
-	}
+	mylog("send_function(): conn=%p, fn_name=%s, result_is_int=%d, nargs=%d\n", self, fn_name, result_is_int, nargs);
 
 	/* Finish the pending extended query first */
 #define	return DONT_CALL_RETURN_FROM_HERE???
 	ENTER_INNER_CONN_CS(self, func_cs_count);
 
-	leng = 4 + sizeof(Int4) + 2 + 2
-		+ sizeof(Int2);
-
-	for (i = 0; i < nargs; i++)
-	{
-		leng += 4;
-		if (args[i].len >= 0)
-		{
-			if (args[i].isint)
-				leng += 4;
-			else
-				leng += args[i].len;
-		}
-	}
-	leng += 2;
-	SOCK_put_char(sock, 'F');
-	SOCK_put_int(sock, leng, 4);
-	if (SOCK_get_errcode(sock) != 0)
-	{
-		CC_set_error(self, CONNECTION_COULD_NOT_SEND, "Could not send function to backend", func);
-		CC_on_abort(self, CONN_DEAD);
-		ret = FALSE;
-		goto cleanup;
-	}
-
-	SOCK_put_int(sock, fnid, 4);
-	SOCK_put_int(sock, 1, 2); /* # of formats */
-	SOCK_put_int(sock, 1, 2); /* the format is binary */
-	SOCK_put_int(sock, nargs, 2);
-
-	mylog("send_function: done sending function\n");
-
+	snprintf(sqlbuffer, sizeof(sqlbuffer), "SELECT pg_catalog.%s%s", fn_name,
+			 func_param_str[nargs]);
 	for (i = 0; i < nargs; ++i)
 	{
 		mylog("  arg[%d]: len = %d, isint = %d, integer = %d, ptr = %p\n", i, args[i].len, args[i].isint, args[i].u.integer, args[i].u.ptr);
 
-		SOCK_put_int(sock, args[i].len, 4);
+		/* integers are sent as binary, others as text */
 		if (args[i].isint)
-			SOCK_put_int(sock, args[i].u.integer, 4);
-		else
-			SOCK_put_n_char(sock, (char *) args[i].u.ptr, args[i].len);
-
-	}
-
-	SOCK_put_int(sock, 1, 2); /* result format is binary */
-	mylog("    done sending args\n");
-
-	SOCK_flush_output(sock);
-	mylog("  after flush output\n");
-
-	done = FALSE;
-	resultResponse = FALSE; /* for before V3 only */
-	while (!done)
-	{
-		id = SOCK_get_id(sock);
-		mylog("   got id = %c\n", id);
-		response_length = SOCK_get_response_length(sock);
-inolog("send_func response_length=%d\n", response_length);
-
-		switch (id)
 		{
-			case 'G':
-				if (!resultResponse)
-				{
-					done = TRUE;
-					ret = FALSE;
-					break;
-				} /* fall through */
-			case 'V':
-				*actual_result_len = SOCK_get_int(sock, 4);
-				if (-1 != *actual_result_len)
-				{
-					if (result_is_int)
-						*((int *) result_buf) = SOCK_get_int(sock, 4);
-					else
-						SOCK_get_n_char(sock, (char *) result_buf, *actual_result_len);
-
-					mylog("  after get result\n");
-				}
-				break;			/* ok */
-
-			case 'N':
-				handle_notice_message(self, msgbuffer, sizeof(msgbuffer), NULL, "send_function", NULL);
-				/* continue reading */
-				break;
-
-			case 'E':
-				handle_error_message(self, msgbuffer, sizeof(msgbuffer), NULL, "send_function", NULL);
-				CC_set_errormsg(self, msgbuffer);
-#ifdef	_LEGACY_MODE_
-				CC_on_abort(self, 0);
-#endif /* _LEGACY_MODE_ */
-
-				mylog("send_function(V): 'E' - %s\n", CC_get_errormsg(self));
-				qlog("ERROR from backend during send_function: '%s'\n", CC_get_errormsg(self));
-				ret = FALSE;
-				break;
-
-			case 'Z':
-				EatReadyForQuery(self);
-				done = TRUE;
-				break;
-
-			case '0':	/* empty result */
-				if (resultResponse)
-				{
-					resultResponse = FALSE;
-					break;
-				} /* fall through */
-
-			default:
-				/* skip the unexpected response if possible */
-				if (response_length >= 0)
-					break;
-				CC_set_error(self, CONNECTION_BACKEND_CRAZY, "Unexpected protocol character from backend (send_function, args)", func);
-				CC_on_abort(self, CONN_DEAD);
-
-				mylog("send_function: error - %s\n", CC_get_errormsg(self));
-				done = TRUE;
-				ret = FALSE;
-				break;
+			paramTypes[i] = PG_TYPE_INT4;
+			intParamBufs[i] = htonl(args[i].u.integer);
+			paramValues[i] = (char *) &intParamBufs[i];
+			paramLengths[i] = 4;
+			paramFormats[i] = 1;
+		}
+		else
+		{
+			paramTypes[i] = 0;
+			paramValues[i] = args[i].u.ptr;
+			paramLengths[i] = args[i].len;
+			paramFormats[i] = 1;
 		}
 	}
+
+	pgres = PQexecParams(sock->pqconn, sqlbuffer, nargs,
+						 paramTypes, (const char * const *) paramValues,
+						 paramLengths, paramFormats, 1);
+
+	mylog("send_function: done sending function\n");
+
+	if (PQresultStatus(pgres) != PGRES_TUPLES_OK)
+	{
+		handle_pgres_error(self, pgres, "send_query", NULL, TRUE);
+		goto cleanup;
+	}
+
+	if (PQnfields(pgres) != 1 || PQntuples(pgres) != 1)
+	{
+		CC_set_errormsg(self, "unexpected result set from large_object function");
+		goto cleanup;
+	}
+
+	*actual_result_len = PQgetlength(pgres, 0, 0);
+
+	mylog("send_function(): got result with length %d\n", *actual_result_len);
+
+	if (*actual_result_len > 0)
+	{
+		char *value = PQgetvalue(pgres, 0, 0);
+		if (result_is_int)
+		{
+			Int4 int4val;
+			memcpy(&int4val, value, sizeof(Int4));
+			int4val = ntohl(int4val);
+			memcpy(result_buf, &int4val, sizeof(Int4));
+		}
+		else
+			memcpy(result_buf, value, *actual_result_len);
+	}
+
+	ret = TRUE;
 
 cleanup:
 #undef	return
 	CLEANUP_FUNC_CONN_CS(func_cs_count, self);
+	if (pgres)
+		PQclear(pgres);
 	return ret;
 }
 
