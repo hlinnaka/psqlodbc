@@ -70,24 +70,6 @@ CUSTOMLINKLIBS=
 !MESSAGE Using PostgreSQL Include directory: $(PG_INC)
 !MESSAGE Using PostgreSQL Library directory: $(PG_LIB)
 
-!IF "$(USE_LIBPQ)" != "no"
-!MESSAGE Using OpenSSL Include directory: $(SSL_INC)
-!MESSAGE Using OpenSSL Library directory: $(SSL_LIB)
-!ENDIF
-
-!IF "$(USE_LIBPQ)" != "no"
-SSL_DLL = "SSLEAY32.dll"
-RESET_CRYPTO = yes
-ADD_DEFINES = $(ADD_DEFINES) /D USE_LIBPQ /D "SSL_DLL=\"$(SSL_DLL)\"" /D USE_SSL
-!ENDIF
-
-!IF "$(USE_SSPI)" == "yes"
-ADD_DEFINES = $(ADD_DEFINES) /D USE_SSPI
-!ENDIF
-!IF "$(USE_GSS)" == "yes"
-ADD_DEFINES = $(ADD_DEFINES) /D USE_GSS
-!ENDIF
-
 !IF "$(ANSI_VERSION)" == "yes"
 DTCLIB = pgenlista
 !ELSE
@@ -99,19 +81,7 @@ DTCDLL = $(DTCLIB).dll
 ADD_DEFINES=$(ADD_DEFINES) /D _WIN64
 !ENDIF
 
-!IF "$(USE_LIBPQ)" != "no"
-VC07_DELAY_LOAD=/DelayLoad:libpq.dll /DelayLoad:$(SSL_DLL)
-!IF "$(RESET_CRYPTO)" == "yes"
-VC07_DELAY_LOAD=$(VC07_DELAY_LOAD) /DelayLoad:libeay32.dll
-ADD_DEFINES=$(ADD_DEFINES) /D RESET_CRYPTO_CALLBACKS
-!ENDIF
-!ENDIF
-!IF "$(USE_SSPI)" == "yes"
-VC07_DELAY_LOAD=$(VC07_DELAY_LOAD) /DelayLoad:crypt32.dll
-!ENDIF
-!IF "$(USE_GSS)" == "yes"
-VC07_DELAY_LOAD=$(VC07_DELAY_LOAD) /DelayLoad:gssapi64.dll
-!ENDIF
+VC07_DELAY_LOAD=/DelayLoad:libpq.dll
 !IF "$(MSDTC)" != "no"
 VC07_DELAY_LOAD=$(VC07_DELAY_LOAD) /DelayLoad:$(DTCDLL)
 !ENDIF
@@ -137,12 +107,6 @@ ADD_DEFINES = $(ADD_DEFINES) /Wp64
 
 !IF "$(PG_INC)" != ""
 INC_OPT = $(INC_OPT) /I "$(PG_INC)"
-!ENDIF
-!IF "$(SSL_INC)" != ""
-INC_OPT = $(INC_OPT) /I "$(SSL_INC)"
-!ENDIF
-!IF "$(GSS_INC)" != ""
-INC_OPT = $(INC_OPT) /I "$(GSS_INC)"
 !ENDIF
 !IF "$(ADDL_INC)" != ""
 INC_OPT = $(INC_OPT) /I "$(ADD_INC)"
@@ -265,12 +229,6 @@ LINK32_FLAGS=$(LINK32_FLAGS) $(VC07_DELAY_LOAD)
 !IF "$(PG_LIB)" != ""
 LINK32_FLAGS=$(LINK32_FLAGS) /libpath:"$(PG_LIB)"
 !ENDIF
-!IF "$(GSS_LIB)" != ""
-LINK32_FLAGS=$(LINK32_FLAGS) /libpath:"$(GSS_LIB)"
-!ENDIF
-!IF "$(SSL_LIB)" != ""
-LINK32_FLAGS=$(LINK32_FLAGS) /libpath:"$(SSL_LIB)"
-!ENDIF
 
 LINK32_OBJS= \
 	"$(INTDIR)\bind.obj" \
@@ -284,7 +242,6 @@ LINK32_OBJS= \
 	"$(INTDIR)\execute.obj" \
 	"$(INTDIR)\info.obj" \
 	"$(INTDIR)\lobj.obj" \
-	"$(INTDIR)\md5.obj" \
 	"$(INTDIR)\misc.obj" \
 	"$(INTDIR)\mylog.obj" \
 	"$(INTDIR)\pgapi30.obj" \
@@ -296,13 +253,6 @@ LINK32_OBJS= \
 	"$(INTDIR)\qresult.obj" \
 	"$(INTDIR)\results.obj" \
 	"$(INTDIR)\setup.obj" \
-!IF "$(USE_SSPI)" == "yes"
-	"$(INTDIR)\sspisvcs.obj" \
-!ENDIF
-!IF "$(USE_GSS)" == "yes"
-	"$(INTDIR)\gsssvcs.obj" \
-!ENDIF
-	"$(INTDIR)\socket.obj" \
 	"$(INTDIR)\statement.obj" \
 	"$(INTDIR)\tuple.obj" \
 	"$(INTDIR)\odbcapi.obj" \

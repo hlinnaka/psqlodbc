@@ -27,14 +27,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
-#include <arpa/inet.h> /* for htonl */
-#ifdef	WIN32
-#ifdef	USE_SSPI
-#include "sspisvcs.h"
-#endif /* USE_SSPI */
+
+/* for htonl */
+#ifdef WIN32
+#include <Winsock2.h>
 #else
-#include <errno.h>
-#endif /* WIN32 */
+#include <arpa/inet.h>
+#endif
 
 #include "environ.h"
 #include "statement.h"

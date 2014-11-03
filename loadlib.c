@@ -141,7 +141,6 @@ DliErrorHook(unsigned	dliNotify,
 		PDelayLoadInfo	pdli)
 {
 	HMODULE	hmodule = NULL;
-	int	i;
 
 	mylog("Dli%sHook %s Notify=%d\n", (dliFailLoadLib == dliNotify || dliFailGetProc == dliNotify) ? "Error" : "Notify", NULL != pdli->szDll ? pdli->szDll : pdli->dlp.szProcName, dliNotify);
 	switch (dliNotify)
