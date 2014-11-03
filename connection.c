@@ -2976,22 +2976,36 @@ int	CC_discard_marked_objects(ConnectionClass *conn)
 static void
 LIBPQ_update_transaction_status(ConnectionClass *self)
 {
+	BOOL    was_in_error_trans = CC_is_in_error_trans(self);
+
 	if (!self->sock)
 		return;
 
 	switch (PQtransactionStatus(self->sock->pqconn))
 	{
 		case PQTRANS_IDLE:
-		case PQTRANS_ACTIVE:
-			CC_set_no_trans(self);
-			CC_set_no_error_trans(self);
+			if (CC_is_in_trans(self))
+			{
+				if (CC_is_in_error_trans(self))
+					CC_on_abort(self, NO_TRANS);
+				else
+					CC_on_commit(self);
+			}
 			break;
+
 		case PQTRANS_INERROR:
 			CC_set_in_trans(self);
 			CC_set_in_error_trans(self);
 			break;
-		default:
-			/* unknown status */
+
+		case PQTRANS_ACTIVE:
+			CC_set_in_trans(self);
+			CC_set_no_error_trans(self);
+			if (was_in_error_trans)
+				CC_on_abort_partial(self);
+			break;
+
+		default: 			/* unknown status */
 			break;
 	}
 }

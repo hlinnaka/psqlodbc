@@ -1224,6 +1224,12 @@ inolog("clear obsolete %d tuples\n", num_backend_rows);
 					 fetch_size, QR_get_cursor(self));
 
 			mylog("%s: sending actual fetch (%d) query '%s'\n", func, fetch_size, fetch);
+			if (!boundary_adjusted)
+			{
+				QR_set_rowstart_in_cache(self, offset);
+				QR_set_num_cached_rows(self, 0);
+				boundary_adjusted = TRUE;
+			}
 
 			/* don't read ahead for the next tuple (self) ! */
 			qi.row_size = self->cache_size;
@@ -1266,6 +1272,8 @@ inolog("clear obsolete %d tuples\n", num_backend_rows);
 
 	curr_eof = reached_eof_now = (QR_once_reached_eof(self) && self->cursTuple >= (Int4)self->num_total_read);
 inolog("reached_eof_now=%d\n", reached_eof_now);
+if (ExecuteRequest)
+{
 	for (kill_conn = loopend = rcvend = FALSE; !loopend;)
 	{
 		id = SOCK_get_id(sock);
@@ -1350,6 +1358,7 @@ inolog("id='%c' response_length=%d\n", id, response_length);
 				mylog("portal suspend");
 				QR_set_no_fetching_tuples(self);
 				self->dataFilled = TRUE;
+				mylog("_%s: 's' fetch_total = %d & this_fetch = %d\n", func, self->num_total_read, self->num_cached_rows);
 				break;
 			case 'T':
 			default:
@@ -1366,6 +1375,12 @@ inolog("id='%c' response_length=%d\n", id, response_length);
 		if (0 != SOCK_get_errcode(sock))
 			break;
 	}
+}
+else
+{
+	mylog("_%s: PGresult: fetch_total = %d & this_fetch = %d\n", func, self->num_total_read, self->num_cached_rows);
+	mylog("_%s: PGresult: cursTuple = %d\n", func, self->cursTuple);
+}
 	if (!kill_conn && !rcvend && 0 == SOCK_get_errcode(sock))
 	{
 		for (;;) /* discard the result until ReadyForQuery comes */
