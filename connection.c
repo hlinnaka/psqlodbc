@@ -22,13 +22,6 @@
 #include "connection.h"
 #include <libpq-fe.h>
 
-#ifdef WIN32
-#define PG_PRINTF_ATTRIBUTE gnu_printf
-#else
-#define PG_PRINTF_ATTRIBUTE printf
-#endif
-#include "internal/pqexpbuffer.h" /* for pqexpbuffer.h */
-
 #include "misc.h"
 
 #include <stdio.h>
@@ -1803,7 +1796,10 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 			discard_next_savepoint = FALSE,
 			consider_rollback;
 	int		func_cs_count = 0;
-	PQExpBufferData query_buf;
+	int			query_buf_len = 0;
+	char	   *query_buf = NULL;
+	char	   *query_buf_next;
+	int			query_len;
 
 	/* QR_set_command() dups this string so doesn't need static */
 	char	   *cmdbuffer;
@@ -1883,27 +1879,69 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 		}
 	}
 
-	/* XXX: append all these together, to avoid round-trips */
-	initPQExpBuffer(&query_buf);
+	/* append all these together, to avoid round-trips */
+	query_len = strlen(query);
+
+	query_buf_len = strlen(bgncmd) + 1
+		+ strlen(svpcmd) + 1 + strlen(per_query_svp) + 1
+		+ query_len
+		+ (appendq ? (1 + strlen(appendq)) : 0)
+		+ 1 + strlen(rlscmd) + strlen(per_query_svp)
+		+ 1;
+	query_buf = malloc(query_buf_len);
+	if (!query_buf)
+	{
+		CC_set_error(self, CONN_NO_MEMORY_ERROR, "Couldn't alloc buffer for query.", "");
+		goto cleanup;
+	}
+	query_buf_next = query_buf;
 	if (issue_begin)
 	{
-		appendPQExpBufferStr(&query_buf, bgncmd);
-		appendPQExpBufferChar(&query_buf, ';');
+		strcpy(query_buf_next, bgncmd);
+		query_buf_next += strlen(bgncmd);
+		*(query_buf_next++) = ';';
 		discard_next_begin = TRUE;
 	}
 	if (query_rollback)
 	{
-		appendPQExpBuffer(&query_buf, "%s %s;", svpcmd, per_query_svp);
+		strcpy(query_buf_next, svpcmd);
+		query_buf_next += strlen(svpcmd);
+		*(query_buf_next++) = ' ';
+		strcpy(query_buf_next, per_query_svp);
+		query_buf_next += strlen(per_query_svp);
+		*(query_buf_next++) = ';';
 		discard_next_savepoint = TRUE;
 	}
-	appendPQExpBufferStr(&query_buf, query);
+	memcpy(query_buf_next, query, query_len);
+	query_buf_next += query_len;
+	*query_buf_next = '\0';
 	if (appendq)
 	{
-		appendPQExpBufferChar(&query_buf, ';');
-		appendPQExpBufferStr(&query_buf, appendq);
+		*(query_buf_next++) = ';';
+		strcpy(query_buf_next, appendq);
+		query_buf_next += strlen(appendq);
+		*query_buf_next = '\0';
 	}
 	if (query_rollback)
-		appendPQExpBuffer(&query_buf, ";%s %s", rlscmd, per_query_svp);
+	{
+		*(query_buf_next++) = ';';
+		strcpy(query_buf_next, rlscmd);
+		query_buf_next += strlen(rlscmd);
+		*(query_buf_next++) = ' ';
+		strcpy(query_buf_next, per_query_svp);
+		query_buf_next += strlen(per_query_svp);
+		*query_buf_next = '\0';
+	}
+
+	if (query_buf_next > query_buf + query_buf_len)
+	{
+		/*
+		 * this should not happen, and if it does, we've already overrun
+		 * the buffer and possibly corrupted memory.
+		 */
+		SC_set_error(stmt, STMT_INTERNAL_ERROR, "query buffer overrun", func);
+		goto cleanup;
+	}
 
 	/* Set up notice receiver */
 	nrarg.conn = self;
@@ -1911,7 +1949,7 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 	nrarg.res = NULL;
 	PQsetNoticeReceiver(self->pqconn, receive_libpq_notice, &nrarg);
 
-	if(!PQsendQuery(self->pqconn, query_buf.data))
+	if(!PQsendQuery(self->pqconn, query_buf))
 	{
 		char *errmsg = PQerrorMessage(self->pqconn);
 		CC_set_error(self, CONNECTION_SERVER_NOT_REACHED, errmsg, func);
@@ -2124,10 +2162,12 @@ cleanup:
 		{
 			if (CC_is_in_error_trans(self))
 			{
-				printfPQExpBuffer(&query_buf, "%s TO %s; %s %s",
-								  rbkcmd, per_query_svp,
-								  rlscmd, per_query_svp);
-				PQexec(self->pqconn, query_buf.data);
+				char tmpsqlbuf[100];
+				snprintf(tmpsqlbuf, sizeof(tmpsqlbuf),
+						 "%s TO %s; %s %s",
+						 rbkcmd, per_query_svp,
+						 rlscmd, per_query_svp);
+				PQexec(self->pqconn, tmpsqlbuf);
 			}
 		}
 		else if (CC_is_in_error_trans(self))
@@ -2141,6 +2181,9 @@ cleanup:
 	 */
 	if (!ReadyToReturn)
 		retres = cmdres;
+
+	if (query_buf)
+		free(query_buf);
 
 	/*
 	 * Cleanup garbage results before returning.
