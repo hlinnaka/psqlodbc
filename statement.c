@@ -819,7 +819,6 @@ SC_recycle_statement(StatementClass *self)
 {
 	CSTR	func = "SC_recycle_statement";
 	ConnectionClass *conn;
-	QResultClass	*res;
 
 	mylog("%s: self= %p\n", func, self);
 
@@ -881,19 +880,8 @@ inolog("SC_clear_parse_status\n");
 	}
 
 	/* Free any cursors */
-	if (res = SC_get_Result(self), res)
-	{
-		switch (self->prepared)
-		{
-			case PREPARED_PERMANENTLY:
-			case PREPARED_TEMPORARILY:
-				SC_reset_result_for_rerun(self);
-				break;
-			default:
-				SC_set_Result(self, NULL);
-				break;
-		}
-	}
+	if (SC_get_Result(self))
+		SC_set_Result(self, NULL);
 	self->inaccurate_result = FALSE;
 	self->miscinfo = 0;
 	/* self->rbonerr = 0; Never clear the bits here */
