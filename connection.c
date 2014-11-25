@@ -855,9 +855,7 @@ handle_pgres_error(ConnectionClass *self, const PGresult *pgres,
 		errmsglen = strlen(errseverity) + 2 + strlen(errprimary) + 1;
 		errmsg = malloc(errmsglen);
 		if (errmsg)
-		{
 			snprintf(errmsg, errmsglen, "%s: %s", errseverity, errprimary);
-		}
 	}
 	if (errmsg == NULL)
 		errmsg = errprimary;
@@ -890,7 +888,8 @@ handle_pgres_error(ConnectionClass *self, const PGresult *pgres,
 		if (res)
 		{
 			QR_set_rstatus(res, PORES_FATAL_ERROR);
-			QR_set_message(res, errmsg);
+			if (errmsg && errmsg[0])
+				QR_set_message(res, errmsg);
 			QR_set_aborted(res, TRUE);
 		}
 	}
