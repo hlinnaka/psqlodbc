@@ -2038,6 +2038,13 @@ SC_execute(StatementClass *self)
 					qres->next = NULL;
 					QR_Destructor(qres);
 					qres = nres;
+
+					/*
+					 * If we received fewer rows than requested, there are no
+					 * more rows to fetch.
+					 */
+					if (qres->num_cached_rows < qi.row_size)
+						QR_set_reached_eof(qres);
 				}
 				res = qres;
 			}
