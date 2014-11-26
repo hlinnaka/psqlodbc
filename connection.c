@@ -869,7 +869,7 @@ handle_pgres_error(ConnectionClass *self, const PGresult *pgres,
 	else
 	{
 		CC_set_errornumber(self, CONNECTION_SERVER_REPORTED_WARNING);
-		if (CC_is_in_trans(self))
+		if (fatal && CC_is_in_trans(self))
 			CC_set_in_error_trans(self);
 	}
 
