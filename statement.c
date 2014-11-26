@@ -2482,6 +2482,7 @@ libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
 	int			pgresstatus;
 	QResultClass	*newres = NULL;
 	char	   *cmdtag;
+	char	   *rowcount;
 	BOOL		ret = FALSE;
 	if (!RequestStart(stmt, conn, func))
 		return NULL;
@@ -2541,6 +2542,13 @@ inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_resul
 			QR_set_command(res, cmdtag);
 			if (QR_command_successful(res))
 				QR_set_rstatus(res, PORES_COMMAND_OK);
+
+			/* get rowcount */
+			rowcount = PQcmdTuples(pgres);
+			if (rowcount && rowcount[0])
+				res->recent_processed_row_count = atoi(rowcount);
+			else
+				res->recent_processed_row_count = -1;
 			break;
 
 		case PGRES_EMPTY_QUERY:
