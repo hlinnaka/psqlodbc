@@ -896,7 +896,7 @@ QR_next_tuple(QResultClass *self, StatementClass *stmt)
 	ConnInfo   *ci = NULL;
 	BOOL		internally_invoked = FALSE;
 	BOOL		reached_eof_now = FALSE, curr_eof; /* detecting EOF is pretty important */
-
+	
 inolog("Oh %p->fetch_number=%d\n", self, self->fetch_number);
 inolog("in total_read=%d cursT=%d currT=%d ad=%d total=%d rowsetSize=%d\n", self->num_total_read, self->cursTuple, stmt ? stmt->currTuple : -1, self->ad_count, QR_get_num_total_tuples(self), self->rowset_size_include_ommitted);
 
@@ -1177,10 +1177,7 @@ inolog("clear obsolete %d tuples\n", num_backend_rows);
 
 	mylog("%s: sending actual fetch (%d) query '%s'\n", func, fetch_size, fetch);
 	if (!boundary_adjusted)
-	{
-		QR_set_rowstart_in_cache(self, offset);
 		QR_set_num_cached_rows(self, 0);
-	}
 
 	/* don't read ahead for the next tuple (self) ! */
 	qi.row_size = self->cache_size;
@@ -1196,15 +1193,20 @@ inolog("clear obsolete %d tuples\n", num_backend_rows);
 	internally_invoked = TRUE;
 	cur_fetch = 0;
 
+	QR_set_rowstart_in_cache(self, offset);
+	
 	self->tupleField = NULL;
 	ci = &(conn->connInfo);
 	num_rows_in = self->num_cached_rows;
 
-	curr_eof = reached_eof_now = (QR_once_reached_eof(self) && self->cursTuple >= (Int4)self->num_total_read);
+	if (curr_eof)
+		reached_eof_now = curr_eof;
+	else
+		curr_eof = reached_eof_now = (QR_once_reached_eof(self) && self->cursTuple >= (Int4)self->num_total_read);
 inolog("reached_eof_now=%d\n", reached_eof_now);
 
 	mylog("_%s: PGresult: fetch_total = %d & this_fetch = %d\n", func, self->num_total_read, self->num_cached_rows);
-	mylog("_%s: PGresult: cursTuple = %d\n", func, self->cursTuple);
+	mylog("_%s: PGresult: cursTuple = %d, offset = %d\n", func, self->cursTuple, offset);
 
 	if (!ret)
 		RETURN(ret)
@@ -1217,17 +1219,13 @@ inolog("reached_eof_now=%d\n", reached_eof_now);
 		{
 			mylog("%s: reached eof now\n", func);
 			QR_set_reached_eof(self);
-			if (!curr_eof)
+			if (self->cursTuple >= (Int4) self->num_total_read)
 			{
-				if (self->cursTuple >= (Int4) self->num_total_read)
-{
-					self->num_total_read = self->cursTuple + 1;
+				self->num_total_read = self->cursTuple + 1;
 inolog("mayumi setting total_read to %d\n", self->num_total_read);
-}
-				self->cursTuple++;
 			}
-			if (self->ad_count > 0 &&
-			    cur_fetch < fetch_size)
+			self->cursTuple++;
+			if (self->ad_count > 0 && cur_fetch < fetch_size)
 			{
 				/* We have to append the tuples(keys) info from the added tuples(keys) here */
 				SQLLEN	add_size;
