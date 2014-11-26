@@ -89,12 +89,14 @@ EXTRA_DIST = license.txt readme.txt readme_winbuild.txt \
 	test/expected/alter.out \
 	test/expected/arraybinding.out \
 	test/expected/bindcol.out \
+	test/expected/bookmark.out \
 	test/expected/boolsaschar.out \
 	test/expected/catalogfunctions.out \
 	test/expected/commands.out \
 	test/expected/connect.out \
 	test/expected/cte.out \
 	test/expected/cursor-commit.out \
+	test/expected/cursor-movement.out \
 	test/expected/declare-fetch-commit-test.out \
 	test/expected/cursors.out \
 	test/expected/cursors_1.out \
@@ -119,6 +121,7 @@ EXTRA_DIST = license.txt readme.txt readme_winbuild.txt \
 	test/expected/sampletables.out \
 	test/expected/select.out \
 	test/expected/stmthandles.out \
+	test/expected/update.out \
 	test/launcher \
 	test/Makefile.in \
 	test/odbc.ini \
@@ -128,6 +131,7 @@ EXTRA_DIST = license.txt readme.txt readme_winbuild.txt \
 	test/src/alter-test.c \
 	test/src/arraybinding-test.c \
 	test/src/bindcol-test.c \
+	test/src/bookmark-test.c \
 	test/src/boolsaschar-test.c \
 	test/src/catalogfunctions-test.c \
 	test/src/commands-test.c \
@@ -136,6 +140,7 @@ EXTRA_DIST = license.txt readme.txt readme_winbuild.txt \
 	test/src/connect-test.c \
 	test/src/cte-test.c \
 	test/src/cursor-commit-test.c \
+	test/src/cursor-movement-test.c \
 	test/src/declare-fetch-commit-test.c \
 	test/src/cursors-test.c \
 	test/src/cvtnulldate-test.c \
@@ -158,6 +163,7 @@ EXTRA_DIST = license.txt readme.txt readme_winbuild.txt \
 	test/src/result-conversions-test.c \
 	test/src/select-test.c \
 	test/src/stmthandles-test.c \
+	test/src/update-test.c \
 	test/tests \
 	test/win.mak
 
