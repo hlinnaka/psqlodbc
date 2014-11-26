@@ -418,7 +418,6 @@ CC_initialize(ConnectionClass *rv, BOOL lockinit)
 	rv->isolation = SQL_TXN_READ_COMMITTED;
 	rv->mb_maxbyte_per_char = 1;
 	rv->max_identifier_length = -1;
-	rv->escape_in_literal = ESCAPE_IN_LITERAL;
 
 	/* Initialize statement options to defaults */
 	/* Statements under this conn will inherit these options */
@@ -1430,6 +1429,23 @@ CC_remove_statement(ConnectionClass *self, StatementClass *stmt)
 
 	return ret;
 }
+
+char CC_get_escape(const ConnectionClass *self)
+{
+	const char	   *scf;
+
+	scf = PQparameterStatus(self->pqconn, "standard_conforming_strings");
+	if (scf == NULL)
+	{
+		/* we're connected to a pre-8.1 server, and E'' is not supported */
+		return '\0';
+	}
+	if (strcmp(scf, "on") != 0)
+		return ESCAPE_IN_LITERAL;
+	else
+		return '\0';
+}
+
 
 int	CC_get_max_idlen(ConnectionClass *self)
 {
@@ -2746,13 +2762,6 @@ cleanup1:
 	self->pg_version_minor = (pversion % 10000) / 100;
 	sprintf(self->pg_version, "%d.%d.%d",  self->pg_version_major, self->pg_version_minor, pversion % 100);
 	self->pg_version_number = (float) atof(self->pg_version);
-
-	param_val = PQparameterStatus(pqconn, std_cnf_strs);
-	if (param_val != NULL)
-	{
-		if (stricmp(param_val, "on") == 0)
-			self->escape_in_literal = '\0';
-	}
 
 	param_val = PQparameterStatus(pqconn, "client_encoding");
 	if (param_val != NULL)

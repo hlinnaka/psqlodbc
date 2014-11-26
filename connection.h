@@ -409,7 +409,6 @@ struct ConnectionClass_
 	char		unicode;
 	char		result_uncommitted;
 	char		lo_is_domain;
-	char		escape_in_literal;
 	char		*original_client_encoding;
 	char		*current_client_encoding;
 	char		*server_encoding;
@@ -452,7 +451,6 @@ struct ConnectionClass_
 #define CC_get_DSN(x)				(x->connInfo.dsn)
 #define CC_get_username(x)			(x->connInfo.username)
 #define CC_is_onlyread(x)			(x->connInfo.onlyread[0] == '1')
-#define CC_get_escape(x)			(x->escape_in_literal)
 #define CC_fake_mss(x)	(/* 0 != (x)->ms_jet && */ 0 < (x)->connInfo.fake_mss)
 #define CC_accessible_only(x)	(0 < (x)->connInfo.accessible_only)
 #define CC_default_is_c(x)	(CC_is_in_ansi_app(x) || x->ms_jet /* not only */ || TRUE /* but for any other ? */)
@@ -534,6 +532,7 @@ int             CC_mark_a_object_to_discard(ConnectionClass *conn, int type, con
 int             CC_discard_marked_objects(ConnectionClass *conn);
 
 int		CC_get_max_idlen(ConnectionClass *self);
+char	CC_get_escape(const ConnectionClass *self);
 
 const		char *CurrCat(const ConnectionClass *self);
 const		char *CurrCatString(const ConnectionClass *self);
