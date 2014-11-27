@@ -395,6 +395,7 @@ SC_Constructor(ConnectionClass *conn)
 		rv->transition_status = STMT_TRANSITION_UNALLOCATED;
 		rv->multi_statement = -1; /* unknown */
 		rv->num_params = -1; /* unknown */
+		rv->processed_statements = NULL;
 
 		rv->__error_message = NULL;
 		rv->__error_number = 0;
@@ -707,6 +708,8 @@ RETCODE
 SC_initialize_stmts(StatementClass *self, BOOL initializeOriginal)
 {
 	ConnectionClass *conn = SC_get_conn(self);
+	ProcessedStmt *pstmt;
+	ProcessedStmt *next_pstmt;
 
 	if (self->lock_CC_for_rb > 0)
 	{
@@ -723,6 +726,18 @@ SC_initialize_stmts(StatementClass *self, BOOL initializeOriginal)
 			free(self->statement);
 			self->statement = NULL;
 		}
+
+		pstmt = self->processed_statements;
+		while (pstmt)
+		{
+			if (pstmt->query)
+				free(pstmt->query);
+			next_pstmt = pstmt->next;
+			free(pstmt);
+			pstmt = next_pstmt;
+		}
+		self->processed_statements = NULL;
+
 		self->prepare = NON_PREPARE_STATEMENT;
 		SC_set_prepared(self, NOT_YET_PREPARED);
 		self->statement_type = STMT_TYPE_UNKNOWN; /* unknown */
@@ -2617,13 +2632,12 @@ cleanup:
 
 BOOL
 ParseWithLibpq(StatementClass *stmt, const char *plan_name,
-			   const char *query_param, Int4 qlen,
+			   const char *query,
 			   Int2 num_params, const char *comment)
 {
 	CSTR	func = "ParseWithLibpq";
 	ConnectionClass	*conn = SC_get_conn(stmt);
 	Int4		sta_pidx = -1, end_pidx = -1;
-	char	   *query = NULL;
 	Oid		   *paramTypes = NULL;
 	BOOL		retval = FALSE;
 	PGresult   *pgres = NULL;
@@ -2664,18 +2678,6 @@ ParseWithLibpq(StatementClass *stmt, const char *plan_name,
 			}
 		}
 mylog("sta_pidx=%d end_pidx=%d num_p=%d\n", sta_pidx, end_pidx, num_params);
-	}
-	qlen = (SQL_NTS == qlen) ? strlen(query_param) : qlen;
-
-	if (qlen == SQL_NTS)
-		query = (char *) query_param;
-	else
-	{
-		query = malloc(qlen + 1);
-		if (!query)
-			goto cleanup;
-		memcpy(query, query_param, qlen);
-		query[qlen] = '\0';
 	}
 
 	/*
@@ -2733,8 +2735,6 @@ mylog("sta_pidx=%d end_pidx=%d num_p=%d\n", sta_pidx, end_pidx, num_params);
 cleanup:
 	if (paramTypes)
 		free(paramTypes);
-	if (query && query != query_param)
-		free(query);
 
 	if (pgres)
 		PQclear(pgres);
@@ -2745,7 +2745,7 @@ cleanup:
 
 QResultClass *
 ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
-						  const char *query_param, Int4 qlen,
+						  const char *query_param,
 						  Int2 num_params, const char *comment,
 						  QResultClass *res)
 {
@@ -2769,8 +2769,7 @@ ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
 	if (!RequestStart(stmt, conn, func))
 		return NULL;
 
-	if (!ParseWithLibpq(stmt, plan_name, query_param, qlen,
-						num_params, comment))
+	if (!ParseWithLibpq(stmt, plan_name, query_param, num_params, comment))
 	{
 		return NULL;
 	}

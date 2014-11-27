@@ -175,6 +175,22 @@ typedef	struct
 	void			*data;
 }	NeedDataCallback;
 
+
+/*
+ * ProcessedStmt represents a fragment of the original SQL query, after
+ * converting ? markers to $n style, processing ODBC escapes, and splitting
+ * a multi-statement into individual statements. Each individual statement
+ * is represented by one ProcessedStmt struct.
+ */
+struct ProcessedStmt
+{
+	struct ProcessedStmt *next;
+	char	   *query;
+	int			num_params;		/* number of parameter markers in this,
+								 * fragment or -1 if not known */
+};
+typedef struct ProcessedStmt ProcessedStmt;
+
 /********	Statement Handle	***********/
 struct StatementClass_
 {
@@ -218,6 +234,12 @@ struct StatementClass_
 
 	char	   *statement;		/* if non--null pointer to the SQL
 					 * statement that has been executed */
+	/*
+	 * processed_statements is the SQL after splitting multi-statement into
+	 * parts, and replacing ? markers with $n style markers, or injecting the
+	 * values in UseServerSidePrepare=0 mode.
+	 */
+	ProcessedStmt *processed_statements;
 
 	TABLE_INFO	**ti;
 	Int2		ntab;
@@ -507,7 +529,7 @@ int		StartRollbackState(StatementClass *self);
 RETCODE		SetStatementSvp(StatementClass *self);
 RETCODE		DiscardStatementSvp(StatementClass *self, RETCODE, BOOL errorOnly);
 
-QResultClass *ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name, const char *query_p, Int4 qlen, Int2 num_params, const char *comment, QResultClass *res);
+QResultClass *ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name, const char *query_p, Int2 num_params, const char *comment, QResultClass *res);
 
 /*
  *	Macros to convert global index <-> relative index in resultset/rowset

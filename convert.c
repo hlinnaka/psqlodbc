@@ -2490,22 +2490,51 @@ insert_without_target(const char *stmt, size_t *endpos)
 		|| ';' == wstmt[0];
 }
 
+static ProcessedStmt *
+buildProcessedStmt(const char *srvquery, Int4 endp, int num_params)
+{
+	ProcessedStmt *pstmt;
+	int			qlen;
+
+	qlen = (endp == SQL_NTS) ? strlen(srvquery) : endp;
+
+	pstmt = malloc(sizeof(ProcessedStmt));
+	if (!pstmt)
+		return NULL;
+
+	pstmt->next = NULL;
+	pstmt->query = malloc(qlen + 1);
+	if (!pstmt->query)
+	{
+		free(pstmt);
+		return NULL;
+	}
+	memcpy(pstmt->query, srvquery, qlen);
+	pstmt->query[qlen] = '\0';
+	pstmt->num_params = num_params;
+
+	return pstmt;
+}
+
 /*
- * Describe the parameters and portal for given query.
+ * Split a possible multi-statement query into parts, and replace ?-style
+ * parameter markers with $n (or the values of the parameters, in
+ * UseServerSidePrepare=0 mode). The resulting queries are stored in a
+ * linked list in stmt->processed_statements.
  */
 static RETCODE
-prep_params_and_sync(StatementClass *stmt, QueryParse *qp, QueryBuild *qb)
+process_statements(StatementClass *stmt, QueryParse *qp, QueryBuild *qb)
 {
-	CSTR		func = "prep_params_and_sync";
+	CSTR		func = "process_statements";
 	RETCODE		retval;
 	ConnectionClass *conn = SC_get_conn(stmt);
-	QResultClass	*res;
 	char		plan_name[32];
 	po_ind_t	multi;
-	int		func_cs_count = 0;
 	const char	*orgquery = NULL, *srvquery = NULL;
 	Int4		endp1, endp2;
 	SQLSMALLINT	num_pa = 0, num_p1, num_p2;
+	ProcessedStmt *pstmt;
+	ProcessedStmt *last_pstmt;
 
 inolog("prep_params_and_sync\n");
 	qb->flags |= FLGB_BUILDING_PREPARE_STATEMENT;
@@ -2523,7 +2552,6 @@ inolog("prep_params_and_sync\n");
 
 	retval = SQL_ERROR;
 #define	return	DONT_CALL_RETURN_FROM_HERE???
-	ENTER_INNER_CONN_CS(conn, func_cs_count);
 	if (NAMED_PARSE_REQUEST == SC_get_prepare_method(stmt))
 		sprintf(plan_name, "_PLAN%p", stmt);
 	else
@@ -2533,22 +2561,75 @@ inolog("prep_params_and_sync\n");
 	multi = stmt->multi_statement;
 	orgquery = stmt->statement;
 	srvquery = qb->query_statement;
+
 	if (multi > 0)
 	{
 		SC_scanQueryAndCountParams(orgquery, conn, &endp1, &num_p1, NULL, NULL);
 		SC_scanQueryAndCountParams(srvquery, conn, &endp2, NULL, NULL, NULL);
 		mylog("%s:parsed for the first command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
+		pstmt = buildProcessedStmt(srvquery, endp2, num_p1);
+		if (!pstmt)
+			goto cleanup;
+		stmt->processed_statements = last_pstmt = pstmt;
+		while (multi > 0)
+		{
+			orgquery += (endp1 + 1);
+			srvquery += (endp2 + 1);
+			num_pa += num_p1;
+			SC_scanQueryAndCountParams(orgquery, conn, &endp1, &num_p1, &multi, NULL);
+			SC_scanQueryAndCountParams(srvquery, conn, &endp2, &num_p2, NULL, NULL);
+			mylog("%s:parsed for the subsequent command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
+			pstmt = buildProcessedStmt(srvquery, endp2 < 0 ? SQL_NTS : endp2, num_p1);
+			if (!pstmt)
+				goto cleanup;
+			last_pstmt->next = pstmt;
+		}
 	}
 	else
 	{
-		endp2 = SQL_NTS;
-		num_p1 = -1;
+		pstmt = buildProcessedStmt(srvquery, SQL_NTS, -1);
+		if (!pstmt)
+			goto cleanup;
+		stmt->processed_statements = pstmt;
 	}
 
 	SC_set_planname(stmt, plan_name);
 	SC_set_prepared(stmt, plan_name[0] ? PREPARING_PERMANENTLY : PREPARING_TEMPORARILY);
 
-	res = ParseAndDescribeWithLibpq(stmt, plan_name, srvquery, endp2, num_p1, "prepare_and_describe", NULL);
+	retval = SQL_SUCCESS;
+cleanup:
+#undef	return
+	stmt->current_exec_param = -1;
+	QB_Destructor(qb);
+	return retval;
+}
+
+/*
+ * Describe the parameters and portal for given query.
+ */
+static RETCODE
+desc_params_and_sync(StatementClass *stmt)
+{
+	CSTR		func = "desc_params_and_sync";
+	RETCODE		retval;
+	ConnectionClass *conn = SC_get_conn(stmt);
+	QResultClass	*res;
+	char	   *plan_name;
+	int		func_cs_count = 0;
+	SQLSMALLINT	num_pa = 0;
+	ProcessedStmt *pstmt;
+
+inolog("prep_params_and_sync\n");
+
+	retval = SQL_ERROR;
+#define	return	DONT_CALL_RETURN_FROM_HERE???
+	ENTER_INNER_CONN_CS(conn, func_cs_count);
+
+	plan_name = stmt->plan_name ? stmt->plan_name : "";
+
+	pstmt = stmt->processed_statements;
+
+	res = ParseAndDescribeWithLibpq(stmt, plan_name, pstmt->query, pstmt->num_params, "prepare_and_describe", NULL);
 	if (res == NULL)
 		goto cleanup;
 	SC_set_Result(stmt, res);
@@ -2557,27 +2638,18 @@ inolog("prep_params_and_sync\n");
 		SC_set_error(stmt, STMT_EXEC_ERROR, "Error while preparing parameters", func);
 		goto cleanup;
 	}
-	if (stmt->multi_statement <= 0)
+	num_pa = pstmt->num_params;
+	for (pstmt = pstmt->next; pstmt; pstmt = pstmt->next)
 	{
-		retval = SQL_SUCCESS;
-		goto cleanup;
-	}
-	while (multi > 0)
-	{
-		orgquery += (endp1 + 1);
-		srvquery += (endp2 + 1);
-		num_pa += num_p1;
-		SC_scanQueryAndCountParams(orgquery, conn, &endp1, &num_p1, &multi, NULL);
-		SC_scanQueryAndCountParams(srvquery, conn, &endp2, &num_p2, NULL, NULL);
-		mylog("%s:parsed for the subsequent command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
-		if (num_p2 > 0)
+		if (pstmt->num_params > 0)
 		{
 			stmt->current_exec_param = num_pa;
 
-			res = ParseAndDescribeWithLibpq(stmt, plan_name, srvquery, endp2 < 0 ? SQL_NTS : endp2, num_p1, "prepare_and_describe", NULL);
+			res = ParseAndDescribeWithLibpq(stmt, plan_name, pstmt->query, pstmt->num_params, "prepare_and_describe", NULL);
 			if (res == NULL)
 				goto cleanup;
 			QR_Destructor(res);
+			num_pa += pstmt->num_params;
 		}
 	}
 	retval = SQL_SUCCESS;
@@ -2585,7 +2657,6 @@ cleanup:
 #undef	return
 	CLEANUP_FUNC_CONN_CS(func_cs_count, conn);
 	stmt->current_exec_param = -1;
-	QB_Destructor(qb);
 	return retval;
 }
 
@@ -2616,7 +2687,9 @@ inolog("prepareParameters\n");
 	qb = &query_crt;
 	if (QB_initialize(qb, qp->stmt_len, stmt, NULL) < 0)
 		return SQL_ERROR;
-	return prep_params_and_sync(stmt, qp, qb);
+	if (process_statements(stmt, qp, qb) == SQL_ERROR)
+		return SQL_ERROR;
+	return desc_params_and_sync(stmt);
 }
 
 /*
