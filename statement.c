@@ -1998,6 +1998,9 @@ SC_execute(StatementClass *self)
 			if (0 != (ci->extra_opts & BIT_IGNORE_ROUND_TRIP_TIME))
 				qflag |= IGNORE_ROUND_TRIP;
 		}
+		res = SC_get_Result(self);
+		if (self->curr_param_result && res)
+			SC_set_Result(self, res->next);
 		res = CC_send_query_append(conn, self->stmt_with_params, qryi, qflag, SC_get_ancestor(self), appendq);
 		if (useCursor && QR_command_maybe_successful(res))
 		{
