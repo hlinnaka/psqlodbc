@@ -172,7 +172,7 @@ static const struct
 };
 
 static QResultClass *libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
-										 QResultClass *res, const char *comment);
+										 const char *comment);
 
 RETCODE		SQL_API
 PGAPI_AllocStmt(HDBC hdbc,
@@ -1957,27 +1957,6 @@ SC_execute(StatementClass *self)
 	else
 	{
 		use_extended_protocol = TRUE;
-		switch (self->prepared)
-		{
-			case PREPARING_PERMANENTLY:
-				if (prepareParameters(self) != SQL_SUCCESS)
-					goto cleanup;
-			case PREPARED_PERMANENTLY:
-				break;
-			case PREPARING_TEMPORARILY:
-			case PREPARED_TEMPORARILY:
-				if (conn->unnamed_prepared_stmt != self)
-				{
-					if (prepareParameters(self) != SQL_SUCCESS)
-						goto cleanup;
-				}
-				{
-					QResultClass	*pres = SC_get_Result(self);
-					if (NULL != pres && NULL == QR_get_command(pres))
-						SC_set_Result(self, NULL); /* discard the parsed information */
-				}
-				break;
-		}
 	}
 	isSelectType = (SC_may_use_cursor(self) || self->statement_type == STMT_TYPE_PROCCALL);
 	if (use_extended_protocol)
@@ -1989,9 +1968,7 @@ SC_execute(StatementClass *self)
 		if (!plan_name)
 			plan_name = "";
 
-		for (res = SC_get_Result(self); NULL != res && NULL != res->next; res = res->next) ;
-
-		res = libpq_bind_and_exec(self, plan_name, self->curr_param_result ? res : NULL, "bind_and_execute");
+		res = libpq_bind_and_exec(self, plan_name, "bind_and_execute");
 		if (!res)
 		{
 			if (SC_get_errornumber(self) <= 0)
@@ -2491,7 +2468,7 @@ RequestStart(StatementClass *stmt, ConnectionClass *conn, const char *func)
 
 static QResultClass *
 libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
-					QResultClass *res, const char *comment)
+					const char *comment)
 {
 	CSTR		func = "libpq_bind_and_exec";
 	ConnectionClass	*conn = SC_get_conn(stmt);
@@ -2503,9 +2480,11 @@ libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
 	PGresult   *pgres;
 	int			pgresstatus;
 	QResultClass	*newres = NULL;
+	QResultClass *res;
 	char	   *cmdtag;
 	char	   *rowcount;
 	BOOL		ret = FALSE;
+
 	if (!RequestStart(stmt, conn, func))
 		return NULL;
 
@@ -2542,17 +2521,49 @@ libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
 
 	SC_forget_unnamed(stmt); /* unnamed plans are unavailable */
 
+	/* 2.5 Prepare and Describe if needed */
+	if (stmt->prepared == PREPARING_TEMPORARILY ||
+		(stmt->prepared == PREPARED_TEMPORARILY && conn->unnamed_prepared_stmt != stmt))
+	{
+		ProcessedStmt *pstmt;
+
+		if (!stmt->processed_statements)
+			prepareParametersNoDesc(stmt);
+
+		pstmt = stmt->processed_statements;
+		pgres = PQexecParams(conn->pqconn,
+							 pstmt->query,
+							 pstmt->num_params,
+							 NULL,
+							 (const char **) paramValues, paramLengths, paramFormats,
+							 resultFormat);
+	}
+	else
+	{
+		if (stmt->prepared == PREPARING_PERMANENTLY)
+			prepareParameters(stmt);
+
+		/* already prepared */
+		pgres = PQexecPrepared(conn->pqconn,
+							   plan_name, 	/* portal name == plan name */
+							   nParams,
+							   (const char **) paramValues, paramLengths, paramFormats,
+							   resultFormat);
+	}
+
 	/* 3. Receive results */
-inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_result);
+	if (stmt->curr_param_result)
+	{
+		for (res = SC_get_Result(stmt); NULL != res && NULL != res->next; res = res->next) ;
+	}
+	else
+		res = NULL;
+
 	if (!res)
 		newres = res = QR_Constructor();
+inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_result);
 
-	pgres = PQexecPrepared(conn->pqconn,
-						   plan_name, 	/* portal name == plan name */
-						   nParams,
-						   (const char **) paramValues, paramLengths, paramFormats,
-						   resultFormat);
-
+	
 	pgresstatus = PQresultStatus(pgres);
 	switch (pgresstatus)
 	{

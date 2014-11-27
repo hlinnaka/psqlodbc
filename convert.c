@@ -2562,35 +2562,25 @@ inolog("prep_params_and_sync\n");
 	orgquery = stmt->statement;
 	srvquery = qb->query_statement;
 
-	if (multi > 0)
+	SC_scanQueryAndCountParams(orgquery, conn, &endp1, &num_p1, &multi, NULL);
+	SC_scanQueryAndCountParams(srvquery, conn, &endp2, NULL, NULL, NULL);
+	mylog("%s:parsed for the first command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
+	pstmt = buildProcessedStmt(srvquery, endp2 < 0 ? SQL_NTS : endp2, num_p1);
+	if (!pstmt)
+		goto cleanup;
+	stmt->processed_statements = last_pstmt = pstmt;
+	while (multi > 0)
 	{
-		SC_scanQueryAndCountParams(orgquery, conn, &endp1, &num_p1, NULL, NULL);
-		SC_scanQueryAndCountParams(srvquery, conn, &endp2, NULL, NULL, NULL);
-		mylog("%s:parsed for the first command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
-		pstmt = buildProcessedStmt(srvquery, endp2, num_p1);
+		orgquery += (endp1 + 1);
+		srvquery += (endp2 + 1);
+		num_pa += num_p1;
+		SC_scanQueryAndCountParams(orgquery, conn, &endp1, &num_p1, &multi, NULL);
+		SC_scanQueryAndCountParams(srvquery, conn, &endp2, &num_p2, NULL, NULL);
+		mylog("%s:parsed for the subsequent command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
+		pstmt = buildProcessedStmt(srvquery, endp2 < 0 ? SQL_NTS : endp2, num_p1);
 		if (!pstmt)
 			goto cleanup;
-		stmt->processed_statements = last_pstmt = pstmt;
-		while (multi > 0)
-		{
-			orgquery += (endp1 + 1);
-			srvquery += (endp2 + 1);
-			num_pa += num_p1;
-			SC_scanQueryAndCountParams(orgquery, conn, &endp1, &num_p1, &multi, NULL);
-			SC_scanQueryAndCountParams(srvquery, conn, &endp2, &num_p2, NULL, NULL);
-			mylog("%s:parsed for the subsequent command length=%d(%d) num_p=%d\n", func, endp2, endp1, num_p1);
-			pstmt = buildProcessedStmt(srvquery, endp2 < 0 ? SQL_NTS : endp2, num_p1);
-			if (!pstmt)
-				goto cleanup;
-			last_pstmt->next = pstmt;
-		}
-	}
-	else
-	{
-		pstmt = buildProcessedStmt(srvquery, SQL_NTS, -1);
-		if (!pstmt)
-			goto cleanup;
-		stmt->processed_statements = pstmt;
+		last_pstmt->next = pstmt;
 	}
 
 	SC_set_planname(stmt, plan_name);
@@ -2660,10 +2650,12 @@ cleanup:
 	return retval;
 }
 
+/*
+ * Process the original SQL query, and and ask the server describe the
+ * parameters.
+ */
 RETCODE	prepareParameters(StatementClass *stmt)
 {
-	QueryParse	query_org, *qp;
-	QueryBuild	query_crt, *qb;
 	ConnectionClass *conn = SC_get_conn(stmt);
 	
 	switch (stmt->prepared)
@@ -2682,14 +2674,27 @@ RETCODE	prepareParameters(StatementClass *stmt)
 	}
 
 inolog("prepareParameters\n");
+
+	if (prepareParametersNoDesc(stmt) == SQL_ERROR)
+		return SQL_ERROR;
+	return desc_params_and_sync(stmt);
+}
+
+/*
+ * Process the original SQL query.
+ */
+RETCODE	prepareParametersNoDesc(StatementClass *stmt)
+{
+	QueryParse	query_org, *qp;
+	QueryBuild	query_crt, *qb;
+
+inolog("prepareParametersNoSync\n");
 	qp = &query_org;
 	QP_initialize(qp, stmt);
 	qb = &query_crt;
 	if (QB_initialize(qb, qp->stmt_len, stmt, NULL) < 0)
 		return SQL_ERROR;
-	if (process_statements(stmt, qp, qb) == SQL_ERROR)
-		return SQL_ERROR;
-	return desc_params_and_sync(stmt);
+	return process_statements(stmt, qp, qb);
 }
 
 /*
