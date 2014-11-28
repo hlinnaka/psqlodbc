@@ -2683,37 +2683,20 @@ LIBPQ_connect(ConnectionClass *self)
 	char *conninfo = NULL;
 	void		*pqconn = NULL;
 	int		pqret;
-	BOOL	libpqLoaded;
 	int		pversion;
 	const char *param_val;
 
 	mylog("connecting to the database  using %s as the server\n",self->connInfo.server);
 
-#ifdef	NOT_USED	/* currently not yet used */
-	if (FALSE && connect_with_param_available())
+	if (!(conninfo = protocol3_opts_build(self)))
 	{
-		const char *opts[PROTOCOL3_OPTS_MAX], *vals[PROTOCOL3_OPTS_MAX];
-
-		protocol3_opts_array(self, opts, vals, TRUE, sizeof(opts) / sizeof(opts[0]));
-		pqconn = CALL_PQconnectdbParams(opts, vals, &libpqLoaded);
-	}
-	else
-#endif /* NOT_USED */
-	{
-		if (!(conninfo = protocol3_opts_build(self)))
-		{
-			if (CC_get_errornumber(self) <= 0)
-				CC_set_error(self, CONN_OPENDB_ERROR, "Couldn't allcate conninfo", func);
-			goto cleanup1;
-		}
-		pqconn = CALL_PQconnectdb(conninfo, &libpqLoaded);
-		free(conninfo);
-	}
-	if (!libpqLoaded)
-	{
-		CC_set_error(self, CONN_UNABLE_TO_LOAD_DLL, "Couldn't load libpq library", func);
+		if (CC_get_errornumber(self) <= 0)
+			CC_set_error(self, CONN_OPENDB_ERROR, "Couldn't allcate conninfo", func);
 		goto cleanup1;
 	}
+	pqconn = PQconnectdb(conninfo);
+	free(conninfo);
+
 	if (!pqconn)
 	{
 		CC_set_error(self, CONN_OPENDB_ERROR, "PQconnectdb error", func);

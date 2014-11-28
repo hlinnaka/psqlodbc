@@ -60,7 +60,6 @@ void
 SetDlgStuff(HWND hdlg, const ConnInfo *ci)
 {
 	char	buff[MEDIUM_REGISTRY_LEN + 1];
-	BOOL	libpq_exist = FALSE;
 	int	i, dsplevel, selidx, dspcount;
 
 	/*
@@ -77,22 +76,13 @@ SetDlgStuff(HWND hdlg, const ConnInfo *ci)
 	SetDlgItemText(hdlg, IDC_PORT, ci->port);
 
 	dsplevel = 0;
-	libpq_exist = SSLLIB_check();
-mylog("libpq_exist=%d\n", libpq_exist);
-	if (libpq_exist)
-	{
-		ShowWindow(GetDlgItem(hdlg, IDC_NOTICE_USER), SW_HIDE);
-		dsplevel = 2;
-	}
-	else
-	{
-mylog("SendMessage CTL_COLOR\n");
-		SendMessage(GetDlgItem(hdlg, IDC_NOTICE_USER), WM_CTLCOLOR, 0, 0);
-#ifdef	USE_SSPI
-		ShowWindow(GetDlgItem(hdlg, IDC_NOTICE_USER), SW_HIDE);
-		dsplevel = 2;
-#endif /* USE_SSPI */
-	}
+
+	/*
+	 * XXX: We used to hide or show this depending whether libpq was loaded,
+	 * but we depend on libpq directly nowadays, so it's always loaded.
+	 */
+	ShowWindow(GetDlgItem(hdlg, IDC_NOTICE_USER), SW_HIDE);
+	dsplevel = 2;
 
 	selidx = -1;
 	for (i = 0; i < sizeof(modetab) / sizeof(modetab[0]); i++)

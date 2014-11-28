@@ -16,13 +16,11 @@
 #endif /* WIN32 */
 
 #include "loadlib.h"
-#include <libpq-fe.h>
 #include "pgenlist.h"
 
 #ifdef  WIN32
 #ifdef  _MSC_VER
 #pragma comment(lib, "Delayimp")
-#pragma comment(lib, "libpq")
 #ifdef	_HANDLE_ENLIST_IN_DTC_
 #ifdef	UNICODE_SUPPORT
 #pragma comment(lib, "pgenlist")
@@ -33,7 +31,6 @@
 // The followings works under VC++6.0 but doesn't work under VC++7.0.
 // Please add the equivalent linker options using command line etc.
 #if (_MSC_VER == 1200) && defined(DYNAMIC_LOAD) // VC6.0
-#pragma comment(linker, "/Delayload:libpq.dll")
 #ifdef	UNICODE_SUPPORT
 #pragma comment(linker, "/Delayload:pgenlist.dll")
 #else
@@ -45,12 +42,6 @@
 
 #if defined(DYNAMIC_LOAD)
 #define	WIN_DYN_LOAD
-CSTR	libpqdll = "LIBPQ.dll";
-#ifdef	_WIN64
-CSTR	gssapidll = "GSSAPI64.dll";
-#else
-CSTR	gssapidll = "GSSAPI32.dll";
-#endif /* _WIN64 */
 #ifdef	UNICODE_SUPPORT
 CSTR	pgenlist = "pgenlist";
 CSTR	pgenlistdll = "PGENLIST.dll";
@@ -85,22 +76,10 @@ CSTR	pgenlistdll = "PGENLISTA.dll";
 #define	RELEASE_NOTIFY_HOOK
 #endif /* _MSC_DELAY_LOAD_IMPORT */
 
-CSTR	libpqlib = "libpq";
-#ifdef	_WIN64
-CSTR	gssapilib = "gssapi64";
-#else
-CSTR	gssapilib = "gssapi32";
-#endif /* _WIN64 */
-CSTR	checkproc1 = "PQconnectdbParams";
-static int	connect_withparam_available = -1;
-CSTR	checkproc2 = "PQconninfoParse";
-static int	sslverify_available = -1;
-
 #if defined(_MSC_DELAY_LOAD_IMPORT)
-static BOOL	loaded_libpq = FALSE;
 static BOOL	loaded_pgenlist = FALSE;
 /*
- *	Load psqlodbc path based libpq dll.
+ *	Load a DLL based on psqlodbc path.
  */
 static HMODULE MODULE_load_from_psqlodbc_path(const char *module_name)
 {
@@ -126,7 +105,7 @@ static HMODULE MODULE_load_from_psqlodbc_path(const char *module_name)
 
 /*
  *	Error hook function for delay load import.
- *	Try to load psqlodbc path based libpq.
+ *	Try to load a DLL based on psqlodbc path.
  */
 #if (_MSC_VER < 1300)
 extern PfnDliHook __pfnDliFailureHook;
@@ -148,29 +127,7 @@ DliErrorHook(unsigned	dliNotify,
 		case dliNotePreLoadLibrary:
 		case dliFailLoadLib:
 			RELEASE_NOTIFY_HOOK
-			if (_strnicmp(pdli->szDll, libpqlib, strlen(libpqlib)) == 0)
-			{
-				if (hmodule = MODULE_load_from_psqlodbc_path(libpqlib), NULL == hmodule)
-					hmodule = LoadLibrary(libpqlib);
-				if (NULL == hmodule)
-					connect_withparam_available = sslverify_available = FALSE;
-				if (connect_withparam_available < 0)
-				{
-					if (NULL == GetProcAddress(hmodule, checkproc1))
-						connect_withparam_available = FALSE;
-					else
-						connect_withparam_available = TRUE;
-inolog("connect_withparam_available=%d\n", connect_withparam_available);
-				}
-				if (sslverify_available < 0)
-				{
-					if (NULL == GetProcAddress(hmodule, checkproc2))
-						sslverify_available = FALSE;
-					else
-						sslverify_available = TRUE;
-				}
-			}
-			else if (_strnicmp(pdli->szDll, pgenlist, strlen(pgenlist)) == 0)
+			if (_strnicmp(pdli->szDll, pgenlist, strlen(pgenlist)) == 0)
 			{
 				if (hmodule = MODULE_load_from_psqlodbc_path(pgenlist), NULL == hmodule)
 					hmodule = LoadLibrary(pgenlist);
@@ -194,22 +151,6 @@ void CleanupDelayLoadedDLLs(void)
 	UnloadFunc	func = __FUnloadDelayLoadedDLL2;
 #endif
 	/* The dll names are case sensitive for the unload helper */
-	if (loaded_libpq)
-	{
-#ifdef	RESET_CRYPTO_CALLBACKS
-		/*
-		 *	May be needed to avoid crash on exit
-		 *	when libpq doesn't reset the callbacks.
-		 */
-		CRYPTO_set_locking_callback(NULL);
-		CRYPTO_set_id_callback(NULL);
-		mylog("passed RESET_CRYPTO_CALLBACKS\n");
-#else
-		mylog("not passed RESET_CRYPTO_CALLBACKS\n");
-#endif /* RESET_CRYPTO_CALLBACKS */
-		success = (*func)(libpqdll);
-		mylog("%s unload success=%d\n", libpqdll, success);
-	}
 	if (loaded_pgenlist)
 	{
 		success = (*func)(pgenlistdll);
@@ -236,115 +177,6 @@ static int filter_env2encoding(int level)
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 #endif /* _MSC_DELAY_LOAD_IMPORT */
-
-BOOL	ssl_verify_available(void)
-{
-	if (sslverify_available < 0)
-	{
-#if defined(_MSC_DELAY_LOAD_IMPORT)
-		TRY_DLI_HOOK
-			PQenv2encoding();
-		}
-		__except (filter_env2encoding(GetExceptionCode())) {
-		}
-		if (sslverify_available < 0)
-			sslverify_available = 0;
-#else
-		sslverify_available = 1;
-#endif /* _MSC_DELAY_LOAD_IMPORT */
-	}
-
-	return (0 != sslverify_available);
-}
-
-BOOL	connect_with_param_available(void)
-{
-	if (connect_withparam_available < 0)
-	{
-#if defined(_MSC_DELAY_LOAD_IMPORT)
-		TRY_DLI_HOOK
-			PQescapeLiteral(NULL, NULL, 0);
-		}
-		__except (filter_env2encoding(GetExceptionCode())) {
-		}
-		if (connect_withparam_available < 0)
-{
-inolog("connect_withparam_available is set to false\n");
-			connect_withparam_available = 0;
-}
-#else
-#ifdef	NOT_USED /* currently not yet used */
-#ifdef HAVE_LIBLTDL
-		lt_dlhandle dlhandle = lt_dlopenext(libpqlib);
-
-		connect_withparam_available = 1;
-		if (NULL != dlhandle)
-		{
-			if (NULL == lt_dlsym(dlhandle, checkproc1))
-				connect_withparam_available = 0;
-			lt_dlclose(dlhandle);
-		}
-#endif /* HAVE_LIBLTDL */
-#endif /* NOT_USED */
-#endif /* _MSC_DELAY_LOAD_IMPORT */
-	}
-
-	return (0 != connect_withparam_available);
-}
-
-void *CALL_PQconnectdb(const char *conninfo, BOOL *libpqLoaded)
-{
-	void *pqconn = NULL;
-	*libpqLoaded = TRUE;
-#if defined(_MSC_DELAY_LOAD_IMPORT)
-	TRY_DLI_HOOK
-inolog("calling PQconnectdb\n");
-		pqconn = PQconnectdb(conninfo);
-	}
-	__except ((GetExceptionCode() & 0xffff) == ERROR_MOD_NOT_FOUND ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
-		*libpqLoaded = FALSE;
-	}
-	RELEASE_NOTIFY_HOOK
-	if (*libpqLoaded)
-	{
-		loaded_libpq = TRUE;
-		/* ssllibs are already loaded by libpq
-		if (PQgetssl(pqconn))
-			loaded_ssllib = TRUE;
-		*/
-	}
-#else
-	pqconn = PQconnectdb(conninfo);
-#endif /* _MSC_DELAY_LOAD_IMPORT */
-	return pqconn;
-}
-
-void *CALL_PQconnectdbParams(const char *opts[], const char *vals[], BOOL *libpqLoaded)
-{
-	void *pqconn = NULL;
-	*libpqLoaded = TRUE;
-#if defined(_MSC_DELAY_LOAD_IMPORT)
-	TRY_DLI_HOOK
-inolog("calling PQconnectdbParams\n");
-		pqconn = PQconnectdbParams(opts, vals, 0);
-	}
-	__except ((GetExceptionCode() & 0xffff) == ERROR_MOD_NOT_FOUND ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
-		*libpqLoaded = FALSE;
-	}
-	RELEASE_NOTIFY_HOOK
-	if (*libpqLoaded)
-	{
-		loaded_libpq = TRUE;
-		/* ssllibs are already loaded by libpq
-		if (PQgetssl(pqconn))
-			loaded_ssllib = TRUE;
-		*/
-	}
-#else
-	pqconn = PQconnectdbParams(opts, vals, 0);
-#endif /* _MSC_DELAY_LOAD_IMPORT */
-	return pqconn;
-}
 
 #ifdef	_HANDLE_ENLIST_IN_DTC_
 RETCODE	CALL_EnlistInDtc(ConnectionClass *conn, void *pTra, int method)
@@ -419,26 +251,3 @@ void	CALL_ReleaseTransactionObject(void *pObj)
 	return;
 }
 #endif /* _HANDLE_ENLIST_IN_DTC_ */
-
-#if defined(WIN_DYN_LOAD)
-BOOL SSLLIB_check(void)
-{
-	extern	HINSTANCE	s_hModule;
-	HMODULE	hmodule = NULL;
-
-	mylog("checking libpq library\n");
-	/* First search the driver's folder */
-	if (NULL == (hmodule = MODULE_load_from_psqlodbc_path(libpqlib)))
-		/* Second try the PATH ordinarily */
-		hmodule = LoadLibrary(libpqlib);
-	mylog("libpq hmodule=%p\n", hmodule);
-	if (hmodule)
-		FreeLibrary(hmodule);
-	return (NULL != hmodule);
-}
-#else
-BOOL SSLLIB_check(void)
-{
-	return TRUE;
-}
-#endif	/* WIN_DYN_LOAD */
