@@ -204,25 +204,6 @@ do { \
 	} \
 } while (0)
 
-/* Authentication types */
-#define AUTH_REQ_OK		0
-#define AUTH_REQ_KRB4		1
-#define AUTH_REQ_KRB5		2
-#define AUTH_REQ_PASSWORD	3
-#define AUTH_REQ_CRYPT		4
-#define AUTH_REQ_MD5		5
-#define AUTH_REQ_SCM_CREDS	6
-#define AUTH_REQ_GSS		7
-#define AUTH_REQ_GSS_CONT	8
-#define AUTH_REQ_SSPI		9
-
-/*	Startup Packet sizes */
-#define SM_DATABASE		64
-#define SM_USER			32
-#define SM_OPTIONS		64
-#define SM_UNUSED		64
-#define SM_TTY			64
-
 typedef unsigned int ProtocolVersion;
 
 #define PG_PROTOCOL(major, minor)	(((major) << 16) | (minor))
@@ -264,7 +245,7 @@ typedef struct
 	char		show_system_tables[SMALL_REGISTRY_LEN];
 	char		translation_dll[MEDIUM_REGISTRY_LEN];
 	char		translation_option[SMALL_REGISTRY_LEN];
-	char		focus_password;
+	char		password_required;
 	pgNAME		conn_settings;
 	signed char	disallow_premature;
 	signed char	allow_keyset;
@@ -494,7 +475,7 @@ char		CC_commit(ConnectionClass *self);
 char		CC_abort(ConnectionClass *self);
 char		CC_set_autocommit(ConnectionClass *self, BOOL on);
 int		CC_set_translation(ConnectionClass *self);
-char		CC_connect(ConnectionClass *self, char password_req, char *salt);
+char		CC_connect(ConnectionClass *self, char *salt);
 char		CC_add_statement(ConnectionClass *self, StatementClass *stmt);
 char		CC_remove_statement(ConnectionClass *self, StatementClass *stmt)
 ;

@@ -96,7 +96,6 @@ PGAPI_DriverConnect(HDBC hdbc,
 	char		connStrOut[MAX_CONNECT_STRING];
 	int			retval;
 	char		salt[5];
-	char		password_required = AUTH_REQ_OK;
 	ssize_t		len = 0;
 	SQLSMALLINT	lenStrout;
 
@@ -154,8 +153,6 @@ PGAPI_DriverConnect(HDBC hdbc,
 #ifdef WIN32
 dialog:
 #endif
-	ci->focus_password = password_required;
-
 inolog("DriverCompletion=%d\n", fDriverCompletion);
 	switch (fDriverCompletion)
 	{
@@ -225,7 +222,7 @@ inolog("DriverCompletion=%d\n", fDriverCompletion);
 
 inolog("before CC_connect\n");
 	/* do the actual connect */
-	retval = CC_connect(conn, password_required, salt);
+	retval = CC_connect(conn, salt);
 	if (retval < 0)
 	{							/* need a password */
 		if (fDriverCompletion == SQL_DRIVER_NOPROMPT)

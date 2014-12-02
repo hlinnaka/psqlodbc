@@ -154,7 +154,7 @@ PGAPI_Connect(HDBC hdbc,
 
 	qlog("conn = %p, %s(DSN='%s', UID='%s', PWD='%s')\n", conn, func, ci->dsn, ci->username, NAME_IS_VALID(ci->password) ? "xxxxx" : "");
 
-	if ((fchar = CC_connect(conn, AUTH_REQ_OK, NULL)) <= 0)
+	if ((fchar = CC_connect(conn, NULL)) <= 0)
 	{
 		/* Error messages are filled in */
 		CC_log_error(func, "Error on CC_connect", conn);
@@ -323,7 +323,7 @@ CC_copy_conninfo(ConnInfo *ci, const ConnInfo *sci)
 	CORR_STRCPY(show_system_tables);
 	CORR_STRCPY(translation_dll);
 	CORR_STRCPY(translation_option);
-	CORR_VALCPY(focus_password);
+	CORR_VALCPY(password_required);
 	NAME_TO_NAME(ci->conn_settings, sci->conn_settings);
 	CORR_VALCPY(disallow_premature);
 	CORR_VALCPY(allow_keyset);
@@ -1226,18 +1226,15 @@ static char CC_initial_log(ConnectionClass *self, const char *func)
 static	char	CC_setenv(ConnectionClass *self);
 static int LIBPQ_connect(ConnectionClass *self);
 static char
-LIBPQ_CC_connect(ConnectionClass *self, char password_req, char *salt_para)
+LIBPQ_CC_connect(ConnectionClass *self, char *salt_para)
 {
 	int		ret;
 	CSTR		func = "LIBPQ_CC_connect";
 
 	mylog("%s: entering...\n", func);
 
-	if (password_req == AUTH_REQ_OK) /* not yet connected */
-	{
-		if (0 == CC_initial_log(self, func))
-			return 0;
-	}
+	if (0 == CC_initial_log(self, func))
+		return 0;
 
 	if (ret = LIBPQ_connect(self), ret <= 0)
 		return ret;
@@ -1247,7 +1244,7 @@ LIBPQ_CC_connect(ConnectionClass *self, char password_req, char *salt_para)
 }
 
 char
-CC_connect(ConnectionClass *self, char password_req, char *salt_para)
+CC_connect(ConnectionClass *self, char *salt_para)
 {
 	ConnInfo *ci = &(self->connInfo);
 	CSTR	func = "CC_connect";
@@ -1257,7 +1254,7 @@ CC_connect(ConnectionClass *self, char password_req, char *salt_para)
 
 	mylog("sslmode=%s\n", self->connInfo.sslmode);
 
-	ret = LIBPQ_CC_connect(self, password_req, salt_para);
+	ret = LIBPQ_CC_connect(self, salt_para);
 	if (ret <= 0)
 		return ret;
 
@@ -2710,11 +2707,12 @@ LIBPQ_connect(ConnectionClass *self)
 inolog("status=%d\n", pqret);
 		errmsg = PQerrorMessage(pqconn);
 		CC_set_error(self, CONNECTION_SERVER_NOT_REACHED, errmsg, func);
-		if (CONNECTION_BAD == pqret && strstr(errmsg, "no password"))
+		if (CONNECTION_BAD == pqret && PQconnectionNeedsPassword(pqconn))
 		{
 			mylog("password retry\n");
 			PQfinish(pqconn);
 			self->pqconn = NULL;
+			self->connInfo.password_required = TRUE;
 			return -1;
 		}
 		mylog("Could not establish connection to the database; LIBPQ returned -> %s\n", errmsg);
@@ -3085,7 +3083,7 @@ DLL_DECLARE BOOL PgDtc_connect(void *self)
 
 	if (CONN_CONNECTED == conn->status)
 		return TRUE;
-	if (CC_connect(conn, AUTH_REQ_OK, NULL) <= 0)
+	if (CC_connect(conn, NULL) <= 0)
 	{
 		/* Error messages are filled in */
 		CC_log_error(func, "Error on CC_connect", conn);
