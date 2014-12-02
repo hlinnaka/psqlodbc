@@ -391,7 +391,6 @@ struct ConnectionClass_
 	char		result_uncommitted;
 	char		lo_is_domain;
 	char		*original_client_encoding;
-	char		*current_client_encoding;
 	char		*server_encoding;
 	Int2		ccsc;
 	Int2		mb_maxbyte_per_char;

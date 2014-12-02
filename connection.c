@@ -738,11 +738,6 @@ CC_cleanup(ConnectionClass *self, BOOL keepCommunication)
 			free(self->original_client_encoding);
 			self->original_client_encoding = NULL;
 		}
-		if (self->current_client_encoding)
-		{
-			free(self->current_client_encoding);
-			self->current_client_encoding = NULL;
-		}
 		if (self->server_encoding)
 		{
 			free(self->server_encoding);
@@ -1247,18 +1242,11 @@ inolog("CC_send_settings\n");
 #ifdef UNICODE_SUPPORT
 	if (CC_is_in_unicode_driver(self))
 	{
-		if (!self->original_client_encoding ||
-		    UTF8 != self->ccsc)
+		const char *curr = PQparameterStatus(self->pqconn, "client_encoding");
+		if (!curr || strcmp(curr, "UTF8") != 0)
 		{
 			QResultClass	*res;
-			if (self->original_client_encoding)
-				free(self->original_client_encoding);
-			self->original_client_encoding = NULL;
-			if (res = CC_send_query(self, "set client_encoding to 'UTF8'", NULL, 0, NULL), QR_command_maybe_successful(res))
-			{
-				self->original_client_encoding = strdup("UNICODE");
-				self->ccsc = pg_CS_code(self->original_client_encoding);
-			}
+			res = CC_send_query(self, "set client_encoding to 'UTF8'", NULL, 0, NULL);
 			QR_Destructor(res);
 		}
 	}
@@ -2639,7 +2627,6 @@ LIBPQ_connect(ConnectionClass *self)
 	void		*pqconn = NULL;
 	int		pqret;
 	int		pversion;
-	const char *param_val;
 
 	mylog("connecting to the database  using %s as the server\n",self->connInfo.server);
 
@@ -2701,12 +2688,6 @@ cleanup1:
 	self->pg_version_minor = (pversion % 10000) / 100;
 	sprintf(self->pg_version, "%d.%d.%d",  self->pg_version_major, self->pg_version_minor, pversion % 100);
 	self->pg_version_number = (float) atof(self->pg_version);
-
-	param_val = PQparameterStatus(pqconn, "client_encoding");
-	if (param_val != NULL)
-	{
-		self->current_client_encoding = strdup(param_val);
-	}
 
 	mylog("Server version=%s\n", self->pg_version);
 	ret = 1;
