@@ -82,7 +82,6 @@
     <RSC_DEFINES></RSC_DEFINES>
     <DELAY_LOAD_DLLS>secur32.dll</DELAY_LOAD_DLLS>
   </PropertyGroup>
-  <!-- USE_LIBPQ -->
   <PropertyGroup Condition="'$(PG_INC)'!=''">
     <ADD_INC>$(ADD_INC);$(PG_INC)</ADD_INC>
     <ADD_LIBPATH>$(ADD_LIBPATH);$(PG_LIB)</ADD_LIBPATH>

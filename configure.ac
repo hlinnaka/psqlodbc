@@ -115,25 +115,24 @@ AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
 #
 # Whether libpq functionalities are used
 #
-AC_ARG_WITH(libpq, [  --with-libpq[[=DIR]]	  [[default=yes]] DIR is the PostgreSQL base install
-			  directory or the path to pg_config
-  --without-libpq	  specify when PostgreSQL package isn't installed],
+AC_ARG_WITH(libpq, [  --with-libpq[[=DIR]]	  DIR is the PostgreSQL base install
+			  directory or the path to pg_config],
 [], [with_libpq=yes])
 
-if test "$with_libpq" != no; then
-	AC_DEFINE(USE_LIBPQ, 1,
-		 [Define to 1 to build with libpq])
-	if test "$with_libpq" != yes; then
-		if test -d "$with_libpq"; then
-			PATH="$PATH:$with_libpq/bin"
-			CPPFLAGS="$CPPFLAGS -I$with_libpq/include"
-			LDFLAGS="$LDFLAGS -L$with_libpq/lib"
+if test "$with_libpq" = no; then
+	AC_MSG_ERROR([libpq is mandatory, --without-libpq is no longer supported])
+fi
+
+if test "$with_libpq" != yes; then
+	if test -d "$with_libpq"; then
+		PATH="$PATH:$with_libpq/bin"
+		CPPFLAGS="$CPPFLAGS -I$with_libpq/include"
+		LDFLAGS="$LDFLAGS -L$with_libpq/lib"
+	else
+		if test -x "$with_libpq"; then
+			PG_CONFIG=$with_libpq
 		else
-			if test -x "$with_libpq"; then
-				PG_CONFIG=$with_libpq
-			else
-				AC_MSG_ERROR([specified pg_config not found])
-			fi
+			AC_MSG_ERROR([specified pg_config not found])
 		fi
 	fi
 fi
@@ -164,17 +163,15 @@ PGAC_ARG_BOOL(enable, pthreads, yes,
 # Find libpq headers and libraries
 #
 
-if test "$with_libpq" != no; then
-  if test -z "$PG_CONFIG"; then
-    AC_PATH_PROGS(PG_CONFIG, pg_config)
-  fi
+if test -z "$PG_CONFIG"; then
+  AC_PATH_PROGS(PG_CONFIG, pg_config)
+fi
 
-  if test -n "$PG_CONFIG"; then
-    pg_includedir=`"$PG_CONFIG" --includedir`
-    pg_libdir=`"$PG_CONFIG" --libdir`
-    CPPFLAGS="$CPPFLAGS -I$pg_includedir"
-    LDFLAGS="$LDFLAGS -L$pg_libdir"
-  fi
+if test -n "$PG_CONFIG"; then
+  pg_includedir=`"$PG_CONFIG" --includedir`
+  pg_libdir=`"$PG_CONFIG" --libdir`
+  CPPFLAGS="$CPPFLAGS -I$pg_includedir"
+  LDFLAGS="$LDFLAGS -L$pg_libdir"
 fi
 
 
@@ -205,17 +202,13 @@ if test "$enable_pthreads" = yes; then
 	       [AC_CHECK_LIB(pthread, pthread_create)])
 fi
 
-if test "$with_libpq" != no; then
-  AC_CHECK_LIB(pq, PQconnectdb, [],
+AC_CHECK_LIB(pq, PQconnectdb, [],
 	      [AC_MSG_ERROR([libpq library not found])])
-fi
 
 # 3. Header files
 
 AC_CHECK_HEADERS(locale.h sys/un.h sys/time.h)
-if test "$with_libpq" != no; then
-  AC_CHECK_HEADER(libpq-fe.h,,[AC_MSG_ERROR([libpq header not found])])
-fi
+AC_CHECK_HEADER(libpq-fe.h,,[AC_MSG_ERROR([libpq header not found])])
 AC_HEADER_TIME
 
 

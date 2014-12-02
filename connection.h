@@ -426,10 +426,6 @@ struct ConnectionClass_
 	DescriptorClass	**descs;
 	pgNAME		schemaIns;
 	pgNAME		tableIns;
-#ifdef	USE_SSPI
-	UInt4		svcs_allowed;
-	UInt4		auth_svcs;
-#endif /* USE_SSPI */
 #if defined(WIN_MULTITHREAD_SUPPORT)
 	CRITICAL_SECTION	cs;
 	CRITICAL_SECTION	slock;

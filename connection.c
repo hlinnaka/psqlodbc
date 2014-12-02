@@ -2911,7 +2911,7 @@ DLL_DECLARE int PgDtc_is_recovery_available(void *self, char *reason, int rsize)
 	LONG	nameSize;
 	char	loginUser[256];
 	BOOL	outReason = FALSE;
-	BOOL	doubtRootCert = TRUE, doubtCert = TRUE, doubtSspi = TRUE;
+	BOOL	doubtRootCert = TRUE, doubtCert = TRUE;
 	const char *delim;
 
 	/*
@@ -2933,57 +2933,36 @@ DLL_DECLARE int PgDtc_is_recovery_available(void *self, char *reason, int rsize)
 	}
 
 	/*
-	 *	Client certificate is used?
-	 *	There seems no way to check it.
+	 * Did we use SSL client certificate, SSPI, Kerberos or similar
+	 * authentication methods?
+	 * There seems no way to check it directly.
 	 */
 	doubtCert = FALSE;
-#ifdef	USE_SSL
-	if (NULL != sock->ssl)
+	if (PQssl(conn->pqconn) != NULL)
 		doubtCert = TRUE;
-#endif /* USE_SSL */
-#ifdef	USE_SSPI
-	if (0 != (sock->sspisvcs & SchannelService))
-		doubtCert = TRUE;
-#endif	/* USE_SSPI */
 
-	/*
-	 *	Sspi authentication is used?
-	 */
-	doubtSspi = FALSE;
-#ifdef	USE_SSPI
-	if (0 != (sock->sspisvcs & (KerberosService | NegotiateService)))
+	nameSize = sizeof(loginUser);
+	if (GetUserNameEx(NameUserPrincipal, loginUser, &nameSize))
 	{
-		if (outReason)
-			strncpy_null(reason, "sspi authentication", rsize);
-		return 0;
+		mylog("loginUser=%s\n", loginUser);
 	}
-#endif	/* USE_SSPI */
+	else
 	{
-		nameSize = sizeof(loginUser);
-		if (GetUserNameEx(NameUserPrincipal, loginUser, &nameSize))
+		int err = GetLastError();
+		switch (err)
 		{
-			doubtSspi = TRUE;
-			mylog("loginUser=%s\n", loginUser);
-		}
-		else
-		{
-			int err = GetLastError();
-			switch (err)
-			{
-				case ERROR_NONE_MAPPED:
-					mylog("The user name is unavailable in the specified format\n");
-					break;
-				case ERROR_NO_SUCH_DOMAIN:
-					mylog("The domain controller is unavailable to perform the lookup\n");
-					break;
-				case ERROR_MORE_DATA:
-					doubtSspi = TRUE;
-					mylog("The buffer is too small\n");
-					break;
-				default:
-					mylog("GetUserNameEx error=%d\n", err);
-					break;
-			}
+			case ERROR_NONE_MAPPED:
+				mylog("The user name is unavailable in the specified format\n");
+				break;
+			case ERROR_NO_SUCH_DOMAIN:
+				mylog("The domain controller is unavailable to perform the lookup\n");
+				break;
+			case ERROR_MORE_DATA:
+				mylog("The buffer is too small\n");
+				break;
+			default:
+				mylog("GetUserNameEx error=%d\n", err);
+				break;
 		}
 	}
 
@@ -3002,13 +2981,6 @@ DLL_DECLARE int PgDtc_is_recovery_available(void *self, char *reason, int rsize)
 	{
 		if (outReason)
 			snprintf(reason, rsize, "%s%scertificate", reason, delim);
-		delim = ", ";
-		ret = -1;
-	}
-	if (doubtCert)
-	{
-		if (outReason)
-			snprintf(reason, rsize, "%s%ssspi", reason, delim);
 		delim = ", ";
 		ret = -1;
 	}

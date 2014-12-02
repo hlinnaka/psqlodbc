@@ -21,9 +21,6 @@
 #include "psqlodbc.h"
 #include "dlg_specific.h"
 #include "environ.h"
-#ifdef	USE_SSPI
-#include "sspisvcs.h"
-#endif /* USE_SSPI */
 #include "misc.h"
 
 #ifdef WIN32
