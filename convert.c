@@ -5038,7 +5038,7 @@ mylog("%d-%d num=%s SQL_BIT=%d\n", to, from, num, SQL_BIT);
 			SQLLEN	paramlen;
 			int	pidx;
 
-			for (prtlen = 0, mapptr = mapExpr; *mapptr; mapptr++)
+			for (mapptr = mapExpr; *mapptr; mapptr++)
 			{
 				if (*mapptr != '$')
 				{
