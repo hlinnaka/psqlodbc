@@ -2820,33 +2820,6 @@ inolog("num_params=%d info=%d\n", stmt->num_params, num_p);
 	}
 	ipdopts = SC_get_IPDF(stmt);
 	extend_iparameter_bindings(ipdopts, stmt->num_params);
-#ifdef	NOT_USED
-	if (stmt->discard_output_params)
-	{
-		for (i = 0, pidx = stmt->proc_return; i < num_p && pidx < stmt->num_params; pidx++)
-		{
-			paramType = ipdopts->parameters[pidx].paramType;
-			if (SQL_PARAM_OUTPUT == paramType)
-			{
-				i++;
-				continue;
-			}
-			oid = SOCK_get_int(conn->sock, 4);
-			PIC_set_pgtype(ipdopts->parameters[pidx], oid);
-		}
-	}
-	else
-	{
-		for (i = 0, pidx = stmt->proc_return; i < num_p; i++, pidx++)
-		{
-			paramType = ipdopts->parameters[pidx].paramType;
-			oid = SOCK_get_int(conn->sock, 4);
-			if (SQL_PARAM_OUTPUT != paramType ||
-				PG_TYPE_VOID != oid)
-				PIC_set_pgtype(ipdopts->parameters[pidx], oid);
-		}
-	}
-#endif /* NOT_USED */
 	pidx = stmt->current_exec_param;
 	if (pidx >= 0)
 		pidx--;
