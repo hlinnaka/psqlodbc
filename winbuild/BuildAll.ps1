@@ -106,7 +106,7 @@ function buildPlatform($platinfo, $Platform)
 	Write-Host "USE LIBPQ  : ($PG_INC $PG_LIB)"
 
 	$MACROS=@"
-/p:PG_LIB="$PG_LIB"``;PG_INC="$PG_INC"``"
+/p:PG_LIB="$PG_LIB" /p:PG_INC="$PG_INC"
 "@
 	if ($BUILD_MACROS -ne "") {
 		$BUILD_MACROS = $BUILD_MACROS -replace ';', '`;'

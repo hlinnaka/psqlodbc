@@ -1807,10 +1807,10 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 			discard_next_savepoint = FALSE,
 			consider_rollback;
 	int		func_cs_count = 0;
-	int			query_buf_len = 0;
+	size_t		query_buf_len = 0;
 	char	   *query_buf = NULL;
 	char	   *query_buf_next;
-	int			query_len;
+	size_t		query_len;
 
 	/* QR_set_command() dups this string so doesn't need static */
 	char	   *cmdbuffer;
