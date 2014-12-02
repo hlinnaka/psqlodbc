@@ -170,7 +170,7 @@ inolog("DriverCompletion=%d\n", fDriverCompletion);
 
 		case SQL_DRIVER_COMPLETE:
 
-			paramRequired = password_required;
+			paramRequired = (ci->password_required && NAME_IS_NULL(ci->password));
 			/* Password is not a required parameter. */
 			if (ci->database[0] == '\0')
 				paramRequired = TRUE;
@@ -234,7 +234,6 @@ inolog("before CC_connect\n");
 		else
 		{
 #ifdef WIN32
-			password_required = -retval;
 			goto dialog;
 #else
 			return SQL_ERROR;	/* until a better solution is found. */
@@ -381,7 +380,7 @@ dconn_FDriverConnectProc(
 				SetFocus(GetDlgItem(hdlg, IDC_PORT));
 			else if (ci->username[0] == '\0')
 				SetFocus(GetDlgItem(hdlg, IDC_USER));
-			else if (ci->focus_password)
+			else if (ci->password_required)
 				SetFocus(GetDlgItem(hdlg, IDC_PASSWORD));
 			break;
 

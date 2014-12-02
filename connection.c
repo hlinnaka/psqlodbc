@@ -2936,7 +2936,7 @@ DLL_DECLARE int PgDtc_is_recovery_available(void *self, char *reason, int rsize)
 	 * There seems no way to check it directly.
 	 */
 	doubtCert = FALSE;
-	if (PQssl(conn->pqconn) != NULL)
+	if (PQgetssl(conn->pqconn) != NULL)
 		doubtCert = TRUE;
 
 	nameSize = sizeof(loginUser);
