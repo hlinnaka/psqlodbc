@@ -394,8 +394,6 @@ struct ConnectionClass_
 	char		*server_encoding;
 	Int2		ccsc;
 	Int2		mb_maxbyte_per_char;
-	int		be_pid;	/* pid returned by backend */
-	int		be_key; /* auth code needed to send cancel */
 	UInt4		isolation;
 	char		*current_schema;
 	StatementClass *unnamed_prepared_stmt;
