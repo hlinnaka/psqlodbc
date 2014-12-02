@@ -928,100 +928,58 @@ receive_libpq_notice(void *arg, const PGresult *pgres)
 
 CSTR std_cnf_strs = "standard_conforming_strings";
 
-static int	protocol3_opts_array(ConnectionClass *self, const char *opts[], const char *vals[], BOOL libpqopt, int dim_opts)
+static int	protocol3_opts_array(ConnectionClass *self, const char *opts[], const char *vals[])
 {
 	ConnInfo	*ci = &(self->connInfo);
-	const	char	*enc = NULL;
 	int	cnt;
 
 	cnt = 0;
-	if (libpqopt && ci->server[0])
+	if (ci->server[0])
 	{
 		opts[cnt] = "host";		vals[cnt++] = ci->server;
 	}
-	if (libpqopt && ci->port[0])
+	if (ci->port[0])
 	{
 		opts[cnt] = "port";		vals[cnt++] = ci->port;
 	}
 	if (ci->database[0])
 	{
-		if (libpqopt)
-		{
-			opts[cnt] = "dbname";	vals[cnt++] = ci->database;
-		}
-		else
-		{
-			opts[cnt] = "database";	vals[cnt++] = ci->database;
-		}
+		opts[cnt] = "dbname";	vals[cnt++] = ci->database;
 	}
-	if (ci->username[0] || !libpqopt)
-	{
-		char	*usrname = ci->username;
-#ifdef	WIN32
-		DWORD namesize = sizeof(ci->username) - 2;
-#endif /* WIN32 */
 
-		opts[cnt] = "user";
-		if (!usrname[0])
-		{
-#ifdef	WIN32
-			if (GetUserName(ci->username + 1, &namesize))
-				usrname = ci->username + 1;
-#endif /* WIN32 */
-		}
-mylog("!!! usrname=%s server=%s\n", usrname, ci->server);
-		vals[cnt++] = usrname;
-	}
-	if (libpqopt)
+	switch (ci->sslmode[0])
 	{
-		switch (ci->sslmode[0])
-		{
-			case '\0':
-				break;
-			case SSLLBYTE_VERIFY:
-				opts[cnt] = "sslmode";
-				switch (ci->sslmode[1])
-				{
-					case 'f':
-						vals[cnt++] = SSLMODE_VERIFY_FULL;
-							break;
-					case 'c':
-						vals[cnt++] = SSLMODE_VERIFY_CA;
-							break;
-					default:
-						vals[cnt++] = ci->sslmode;
-				}
-				break;
-			default:
-				opts[cnt] = "sslmode";
-				vals[cnt++] = ci->sslmode;
-		}
-		if (NAME_IS_VALID(ci->password))
-		{
-			opts[cnt] = "password";	vals[cnt++] = SAFE_NAME(ci->password);
-		}
-		if (ci->gssauth_use_gssapi)
-		{
-			opts[cnt] = "gsslib";	vals[cnt++] = "gssapi";
-		}
-		if (ci->disable_keepalive)
-		{
-			opts[cnt] = "keepalives";	vals[cnt++] = "0";
-		}
+		case '\0':
+			break;
+		case SSLLBYTE_VERIFY:
+			opts[cnt] = "sslmode";
+			switch (ci->sslmode[1])
+			{
+				case 'f':
+					vals[cnt++] = SSLMODE_VERIFY_FULL;
+					break;
+				case 'c':
+					vals[cnt++] = SSLMODE_VERIFY_CA;
+					break;
+				default:
+					vals[cnt++] = ci->sslmode;
+			}
+			break;
+		default:
+			opts[cnt] = "sslmode";
+			vals[cnt++] = ci->sslmode;
 	}
-	else
+	if (NAME_IS_VALID(ci->password))
 	{
-		/* DateStyle */
-		opts[cnt] = "DateStyle"; vals[cnt++] = "ISO";
-		/* extra_float_digits */
-		opts[cnt] = "extra_float_digits";	vals[cnt++] = "2";
-		/* client_encoding */
-		enc = get_environment_encoding(self, self->original_client_encoding, NULL, TRUE);
-		if (enc)
-		{
-			mylog("startup client_encoding=%s\n", enc);
-			opts[cnt] = "client_encoding"; vals[cnt++] = enc;
-		}
+		opts[cnt] = "password";	vals[cnt++] = SAFE_NAME(ci->password);
+	}
+	if (ci->gssauth_use_gssapi)
+	{
+		opts[cnt] = "gsslib";	vals[cnt++] = "gssapi";
+	}
+	if (ci->disable_keepalive)
+	{
+		opts[cnt] = "keepalives";	vals[cnt++] = "0";
 	}
 	opts[cnt] = vals[cnt] = NULL;
 
@@ -1044,7 +1002,7 @@ static char	*protocol3_opts_build(ConnectionClass *self)
 	int	cnt, i;
 	BOOL	blankExist;
 
-	cnt = protocol3_opts_array(self, opts, vals, TRUE, sizeof(opts) / sizeof(opts[0]));
+	cnt = protocol3_opts_array(self, opts, vals);
 	if (cnt < 0)
 		return NULL;
 
