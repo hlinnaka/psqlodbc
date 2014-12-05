@@ -91,6 +91,7 @@ EXTRA_DIST = license.txt readme.txt readme_winbuild.txt \
 	test/expected/bindcol.out \
 	test/expected/bookmark.out \
 	test/expected/boolsaschar.out \
+	test/expected/bulkoperations.out \
 	test/expected/catalogfunctions.out \
 	test/expected/colattribute.out \
 	test/expected/commands.out \
@@ -135,6 +136,7 @@ EXTRA_DIST = license.txt readme.txt readme_winbuild.txt \
 	test/src/bindcol-test.c \
 	test/src/bookmark-test.c \
 	test/src/boolsaschar-test.c \
+	test/src/bulkoperations-test.c \
 	test/src/catalogfunctions-test.c \
 	test/src/colattribute-test.c \
 	test/src/commands-test.c \

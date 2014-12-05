@@ -1,6 +1,6 @@
-\! "./src/positioned-update-test"
+\! "./src/bulkoperations-test"
 connected
-Creating test table pos_update_test
+Creating test table bulkoperations_test
 Opening a cursor for update, and fetching 10 rows
 1	1
 2	2
@@ -9,11 +9,7 @@ Opening a cursor for update, and fetching 10 rows
 5	5
 
 Updating result set
-
-Re-fetching the rows in the result set
-6	6
 105	5
-4	4
 
 Querying the table again
 Result set:
@@ -22,8 +18,9 @@ Result set:
 3	3
 4	4
 105	5
+6	6
 7	7
-8	8
 9	9
 10	10
+1234	5678
 disconnecting
