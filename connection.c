@@ -2626,6 +2626,11 @@ LIBPQ_update_transaction_status(ConnectionClass *self)
 			}
 			break;
 
+		case PQTRANS_INTRANS:
+			CC_set_in_trans(self);
+			CC_set_no_error_trans(self);
+			break;
+
 		case PQTRANS_INERROR:
 			CC_set_in_trans(self);
 			CC_set_in_error_trans(self);
