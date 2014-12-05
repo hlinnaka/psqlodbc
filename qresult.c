@@ -27,7 +27,7 @@
 #include <limits.h>
 
 static BOOL QR_prepare_for_tupledata(QResultClass *self);
-static BOOL QR_read_tuples_from_pgres(QResultClass *, PGresult *pgres);
+static BOOL QR_read_tuples_from_pgres(QResultClass *, PGresult **pgres);
 
 /*
  *	Used for building a Manual Result only
@@ -576,88 +576,85 @@ QR_free_memory(QResultClass *self)
 
 
 BOOL
-QR_from_PGresult(QResultClass *self, StatementClass *stmt, ConnectionClass *conn, const char *cursor, PGresult *pgres)
+QR_from_PGresult(QResultClass *self, StatementClass *stmt, ConnectionClass *conn, const char *cursor, PGresult **pgres)
 {
 	CSTR func = "QR_from_PGResult";
-	int		num_io_params;
-	int		i;
+	int			num_io_params;
+	int			i;
 	Int2		paramType;
-	IPDFields	*ipdopts;
+	IPDFields  *ipdopts;
+	Int2		lf;
+	int			new_num_fields;
+	OID			new_adtid, new_relid = 0, new_attid = 0;
+	Int2		new_adtsize;
+	Int4		new_atttypmod = -1;
+	char	   *new_field_name;
+	Int2		dummy1, dummy2;
+	int			cidx;
 
 	/* First, get column information */
-
 	QR_set_conn(self, conn);
-	{
-		Int2		lf;
-		int			new_num_fields;
-		OID			new_adtid, new_relid = 0, new_attid = 0;
-		Int2		new_adtsize;
-		Int4		new_atttypmod = -1;
-		char	   *new_field_name;
-		Int2		dummy1, dummy2;
-		int			cidx;
 
 	/* at first read in the number of fields that are in the query */
-		new_num_fields = PQnfields(pgres);
-		mylog("num_fields = %d\n", new_num_fields);
+	new_num_fields = PQnfields(*pgres);
+	mylog("num_fields = %d\n", new_num_fields);
 
-		/* according to that allocate memory */
-		QR_set_num_fields(self, new_num_fields);
-		if (NULL == QR_get_fields(self)->coli_array)
-			return FALSE;
+	/* according to that allocate memory */
+	QR_set_num_fields(self, new_num_fields);
+	if (NULL == QR_get_fields(self)->coli_array)
+		return FALSE;
 
-		/* now read in the descriptions */
-		for (lf = 0; lf < new_num_fields; lf++)
+	/* now read in the descriptions */
+	for (lf = 0; lf < new_num_fields; lf++)
+	{
+		new_field_name = PQfname(*pgres, lf);
+		new_relid = PQftable(*pgres, lf);
+		new_attid = PQftablecol(*pgres, lf);
+		new_adtid = (OID) PQftype(*pgres, lf);
+		new_adtsize = (Int2) PQfsize(*pgres, lf);
+		new_atttypmod = (Int4) PQfmod(*pgres, lf);
+
+		/* Subtract the header length */
+		switch (new_adtid)
 		{
-			new_field_name = PQfname(pgres, lf);
-			new_relid = PQftable(pgres, lf);
-			new_attid = PQftablecol(pgres, lf);
-			new_adtid = (OID) PQftype(pgres, lf);
-			new_adtsize = (Int2) PQfsize(pgres, lf);
-			new_atttypmod = (Int4) PQfmod(pgres, lf);
+			case PG_TYPE_DATETIME:
+			case PG_TYPE_TIMESTAMP_NO_TMZONE:
+			case PG_TYPE_TIME:
+			case PG_TYPE_TIME_WITH_TMZONE:
+				break;
+			default:
+				new_atttypmod -= 4;
+		}
+		if (new_atttypmod < 0)
+			new_atttypmod = -1;
 
-			/* Subtract the header length */
-			switch (new_adtid)
+		mylog("%s: fieldname='%s', adtid=%d, adtsize=%d, atttypmod=%d (rel,att)=(%d,%d)\n", func, new_field_name, new_adtid, new_adtsize, new_atttypmod, new_relid, new_attid);
+
+		CI_set_field_info(QR_get_fields(self), lf, new_field_name, new_adtid, new_adtsize, new_atttypmod, new_relid, new_attid);
+
+		QR_set_rstatus(self, PORES_FIELDS_OK);
+		self->num_fields = CI_get_num_fields(QR_get_fields(self));
+		if (QR_haskeyset(self))
+			self->num_fields -= self->num_key_fields;
+		if (stmt)
+		{
+			num_io_params = CountParameters(stmt, NULL, &dummy1, &dummy2);
+			if (stmt->proc_return > 0 ||
+				num_io_params > 0)
 			{
-				case PG_TYPE_DATETIME:
-				case PG_TYPE_TIMESTAMP_NO_TMZONE:
-				case PG_TYPE_TIME:
-				case PG_TYPE_TIME_WITH_TMZONE:
-					break;
-				default:
-					new_atttypmod -= 4;
-			}
-			if (new_atttypmod < 0)
-				new_atttypmod = -1;
-
-			mylog("%s: fieldname='%s', adtid=%d, adtsize=%d, atttypmod=%d (rel,att)=(%d,%d)\n", func, new_field_name, new_adtid, new_adtsize, new_atttypmod, new_relid, new_attid);
-
-			CI_set_field_info(QR_get_fields(self), lf, new_field_name, new_adtid, new_adtsize, new_atttypmod, new_relid, new_attid);
-
-			QR_set_rstatus(self, PORES_FIELDS_OK);
-			self->num_fields = CI_get_num_fields(QR_get_fields(self));
-			if (QR_haskeyset(self))
-				self->num_fields -= self->num_key_fields;
-			if (stmt)
-			{
-				num_io_params = CountParameters(stmt, NULL, &dummy1, &dummy2);
-				if (stmt->proc_return > 0 ||
-					num_io_params > 0)
+				ipdopts = SC_get_IPDF(stmt);
+				extend_iparameter_bindings(ipdopts, stmt->num_params);
+				for (i = 0, cidx = 0; i < stmt->num_params; i++)
 				{
-					ipdopts = SC_get_IPDF(stmt);
-					extend_iparameter_bindings(ipdopts, stmt->num_params);
-					for (i = 0, cidx = 0; i < stmt->num_params; i++)
+					if (i < stmt->proc_return)
+						ipdopts->parameters[i].paramType = SQL_PARAM_OUTPUT;
+					paramType =ipdopts->parameters[i].paramType;
+					if (SQL_PARAM_OUTPUT == paramType ||
+						SQL_PARAM_INPUT_OUTPUT == paramType)
 					{
-						if (i < stmt->proc_return)
-							ipdopts->parameters[i].paramType = SQL_PARAM_OUTPUT;
-						paramType =ipdopts->parameters[i].paramType;
-						if (SQL_PARAM_OUTPUT == paramType ||
-							SQL_PARAM_INPUT_OUTPUT == paramType)
-						{
 inolog("!![%d].PGType %u->%u\n", i, PIC_get_pgtype(ipdopts->parameters[i]), CI_get_oid(QR_get_fields(self), cidx));
-							PIC_set_pgtype(ipdopts->parameters[i], CI_get_oid(QR_get_fields(self), cidx));
-							cidx++;
-						}
+						PIC_set_pgtype(ipdopts->parameters[i], CI_get_oid(QR_get_fields(self), cidx));
+						cidx++;
 					}
 				}
 			}
@@ -668,6 +665,7 @@ inolog("!![%d].PGType %u->%u\n", i, PIC_get_pgtype(ipdopts->parameters[i]), CI_g
 	/* Then, get the data itself */
 	if (!QR_read_tuples_from_pgres(self, pgres))
 		return FALSE;
+
 inolog("!!%p->cursTup=%d total_read=%d\n", self, self->cursTuple, self->num_total_read);
 	if (!QR_once_reached_eof(self) && self->cursTuple >= (Int4) self->num_total_read)
 		self->num_total_read = self->cursTuple + 1;
@@ -681,7 +679,7 @@ inolog("!!%p->cursTup=%d total_read=%d\n", self, self->cursTuple, self->num_tota
 	 * Also fill in command tag. (Typically, it's SELECT, but can also be
 	 * a FETCH.)
 	 */
-	QR_set_command(self, PQcmdStatus(pgres));
+	QR_set_command(self, PQcmdStatus(*pgres));
 	QR_set_cursor(self, cursor);
 	return TRUE;
 }
@@ -896,7 +894,7 @@ QR_next_tuple(QResultClass *self, StatementClass *stmt)
 	ConnInfo   *ci = NULL;
 	BOOL		internally_invoked = FALSE;
 	BOOL		reached_eof_now = FALSE, curr_eof; /* detecting EOF is pretty important */
-	
+
 inolog("Oh %p->fetch_number=%d\n", self, self->fetch_number);
 inolog("in total_read=%d cursT=%d currT=%d ad=%d total=%d rowsetSize=%d\n", self->num_total_read, self->cursTuple, stmt ? stmt->currTuple : -1, self->ad_count, QR_get_num_total_tuples(self), self->rowset_size_include_ommitted);
 
@@ -1194,7 +1192,7 @@ inolog("clear obsolete %d tuples\n", num_backend_rows);
 	cur_fetch = 0;
 
 	QR_set_rowstart_in_cache(self, offset);
-	
+
 	self->tupleField = NULL;
 	ci = &(conn->connInfo);
 	num_rows_in = self->num_cached_rows;
@@ -1338,8 +1336,15 @@ inolog("%s returning %d offset=%d\n", func, ret, offset);
 	return ret;
 }
 
+/*
+ * Read tuples from a libpq PGresult object into QResultClass.
+ *
+ * The result status of the passed-in PGresult should be either
+ * PGRES_TUPLES_OK, or PGRES_SINGLE_TUPLE. If it's PGRES_SINGLE_TUPLE,
+ * this function will call PQgetResult() to read all the available tuples.
+ */
 static BOOL
-QR_read_tuples_from_pgres(QResultClass *self, PGresult *pgres)
+QR_read_tuples_from_pgres(QResultClass *self, PGresult **pgres)
 {
 	Int2		field_lf;
 	int			len;
@@ -1352,13 +1357,31 @@ QR_read_tuples_from_pgres(QResultClass *self, PGresult *pgres)
 	char		tidoidbuf[32];
 	int			rowno;
 	int			nrows;
+	int			resStatus;
 
 	/* set the current row to read the fields into */
 	effective_cols = QR_NumPublicResultCols(self);
 
 	flds = QR_get_fields(self);
 
-	nrows = PQntuples(pgres);
+nextrow:
+	resStatus = PQresultStatus(*pgres);
+	switch (resStatus)
+	{
+		case PGRES_TUPLES_OK:
+		case PGRES_SINGLE_TUPLE:
+			break;
+
+		case PGRES_NONFATAL_ERROR:
+		case PGRES_BAD_RESPONSE:
+		case PGRES_FATAL_ERROR:
+		default:
+			handle_pgres_error(self->conn, *pgres, "read_tuples", self, TRUE);
+			QR_set_rstatus(self, PORES_FATAL_ERROR);
+			return FALSE;
+	}
+
+	nrows = PQntuples(*pgres);
 
 	for (rowno = 0; rowno < nrows; rowno++)
 	{
@@ -1380,7 +1403,7 @@ QR_read_tuples_from_pgres(QResultClass *self, PGresult *pgres)
 		{
 			BOOL isnull = FALSE;
 
-			isnull = PQgetisnull(pgres, rowno, field_lf);
+			isnull = PQgetisnull(*pgres, rowno, field_lf);
 
 			if (isnull)
 			{
@@ -1390,8 +1413,8 @@ QR_read_tuples_from_pgres(QResultClass *self, PGresult *pgres)
 			}
 			else
 			{
-				len = PQgetlength(pgres, rowno, field_lf);
-				value = PQgetvalue(pgres, rowno, field_lf);
+				len = PQgetlength(*pgres, rowno, field_lf);
+				value = PQgetvalue(*pgres, rowno, field_lf);
 				if (field_lf >= effective_cols)
 					buffer = tidoidbuf;
 				else
@@ -1449,6 +1472,15 @@ QR_read_tuples_from_pgres(QResultClass *self, PGresult *pgres)
 
 		if (self->cursTuple >= self->num_total_read)
 			self->num_total_read = self->cursTuple + 1;
+	}
+
+	if (resStatus == PGRES_SINGLE_TUPLE)
+	{
+		/* Process next row */
+		PQclear(*pgres);
+
+		*pgres = PQgetResult(self->conn->pqconn);
+		goto nextrow;
 	}
 
 	self->dataFilled = TRUE;

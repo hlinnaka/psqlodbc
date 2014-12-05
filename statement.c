@@ -2566,7 +2566,6 @@ libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
 		newres = res = QR_Constructor();
 inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_result);
 
-	
 	pgresstatus = PQresultStatus(pgres);
 	switch (pgresstatus)
 	{
@@ -2600,7 +2599,7 @@ inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_resul
 			handle_pgres_error(conn, pgres, "send_query", res, TRUE);
 			break;
 		case PGRES_TUPLES_OK:
-			if (!QR_from_PGresult(res, stmt, conn, NULL, pgres))
+			if (!QR_from_PGresult(res, stmt, conn, NULL, &pgres))
 				goto cleanup;
 			if (res->rstatus == PORES_TUPLES_OK && res->notice)
 				QR_set_rstatus(res, PORES_NONFATAL_ERROR);
@@ -2623,6 +2622,8 @@ inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_resul
 	ret = TRUE;
 	
 cleanup:
+	if (pgres)
+		PQclear(pgres);
 	if (paramValues)
 	{
 		int			i;
@@ -2740,9 +2741,6 @@ mylog("sta_pidx=%d end_pidx=%d num_p=%d\n", sta_pidx, end_pidx, num_params);
 
 	if (plan_name == NULL || plan_name[0] == '\0')
 		conn->unnamed_prepared_stmt = stmt;
-
-	PQclear(pgres);
-	pgres = NULL;
 
 	retval = TRUE;
 

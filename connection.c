@@ -1690,7 +1690,8 @@ is_setting_search_path(const char *query)
 }
 
 static BOOL
-CC_from_PGresult(QResultClass *res, StatementClass *stmt, ConnectionClass *conn, const char *cursor, PGresult *pgres)
+CC_from_PGresult(QResultClass *res, StatementClass *stmt,
+				 ConnectionClass *conn, const char *cursor, PGresult **pgres)
 {
 	BOOL	success = TRUE;
 
@@ -1906,12 +1907,13 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 	nrarg.res = NULL;
 	PQsetNoticeReceiver(self->pqconn, receive_libpq_notice, &nrarg);
 
-	if(!PQsendQuery(self->pqconn, query_buf))
+	if (!PQsendQuery(self->pqconn, query_buf))
 	{
 		char *errmsg = PQerrorMessage(self->pqconn);
 		CC_set_error(self, CONNECTION_SERVER_NOT_REACHED, errmsg, func);
 		goto cleanup;
 	}
+	PQsetSingleRowMode(self->pqconn);
 
 	cmdres = qi ? qi->result_in : NULL;
 	if (cmdres)
@@ -1931,6 +1933,7 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 	while (self->pqconn && (pgres = PQgetResult(self->pqconn)) != NULL)
 	{
 		int status = PQresultStatus(pgres);
+
 		switch (status)
 		{
 			case PGRES_COMMAND_OK:
@@ -1955,7 +1958,7 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 					if (discard_next_begin) /* discard the automatically issued BEGIN */
 					{
 						discard_next_begin = FALSE;
-						continue; /* discard the result */
+						break; /* discard the result */
 					}
 				}
 				else if (strnicmp(cmdbuffer, svpcmd, strlen(svpcmd)) == 0)
@@ -1964,7 +1967,7 @@ CC_send_query_append(ConnectionClass *self, const char *query, QueryInfo *qi, UD
 					{
 inolog("Discarded the first SAVEPOINT\n");
 						discard_next_savepoint = FALSE;
-						continue; /* discard the result */
+						break; /* discard the result */
 					}
 				}
 				else if (strnicmp(cmdbuffer, rbkcmd, strlen(rbkcmd)) == 0)
@@ -2020,6 +2023,7 @@ inolog("Discarded the first SAVEPOINT\n");
 				query_completed = TRUE;
 				break;
 			case PGRES_TUPLES_OK:
+			case PGRES_SINGLE_TUPLE:
 				if (query_completed)
 				{
 					res->next = QR_Constructor();
@@ -2054,7 +2058,7 @@ inolog("Discarded the first SAVEPOINT\n");
 						if (cursor && cursor[0])
 							QR_set_synchronize_keys(res);
 					}
-					if (!CC_from_PGresult(res, stmt, self, cursor, pgres))
+					if (!CC_from_PGresult(res, stmt, self, cursor, &pgres))
 					{
 						if (QR_command_maybe_successful(res))
 							retres = NULL;
@@ -2072,7 +2076,7 @@ inolog("Discarded the first SAVEPOINT\n");
 					 * called from QR_next_tuple and must return
 					 * immediately.
 					 */
-					if (!CC_from_PGresult(res, stmt, self, cursor, pgres))
+					if (!CC_from_PGresult(res, stmt, self, cursor, &pgres))
 					{
 						retres = NULL;
 						break;
@@ -2108,11 +2112,22 @@ inolog("Discarded the first SAVEPOINT\n");
 				retres = NULL;
 				break;
 		}
+
+		if (pgres)
+		{
+			PQclear(pgres);
+			pgres = NULL;
+		}
 	}
 
 cleanup:
 	if (self->pqconn)
 		PQsetNoticeReceiver(self->pqconn, receive_libpq_notice, NULL);
+	if (pgres != NULL)
+	{
+		PQclear(pgres);
+		pgres = NULL;
+	}
 	if (rollback_on_error && CC_is_in_trans(self) && !discard_next_savepoint)
 	{
 		if (query_rollback)
@@ -2124,11 +2139,21 @@ cleanup:
 						 "%s TO %s; %s %s",
 						 rbkcmd, per_query_svp,
 						 rlscmd, per_query_svp);
-				PQexec(self->pqconn, tmpsqlbuf);
+				pgres = PQexec(self->pqconn, tmpsqlbuf);
 			}
 		}
 		else if (CC_is_in_error_trans(self))
-			PQexec(self->pqconn, rbkcmd);
+			pgres = PQexec(self->pqconn, rbkcmd);
+		/*
+		 * XXX: we don't check the result here. Should we? We're rolling back,
+		 * so it's not clear what else we can do on error. Giving an error
+		 * message to the application would be nice though.
+		 */
+		if (pgres != NULL)
+		{
+			PQclear(pgres);
+			pgres = NULL;
+		}
 	}
 
 	CLEANUP_FUNC_CONN_CS(func_cs_count, self);
