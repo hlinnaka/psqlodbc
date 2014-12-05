@@ -2104,7 +2104,7 @@ inolog("Discarded the first SAVEPOINT\n");
 			case PGRES_COPY_BOTH:
 			default:
 				/* skip the unexpected response if possible */
-				CC_set_error(self, CONNECTION_BACKEND_CRAZY, "Unexpected protocol character from backend (send_query)", func);
+				CC_set_error(self, CONNECTION_BACKEND_CRAZY, "Unexpected result status (send_query)", func);
 				CC_on_abort(self, CONN_DEAD);
 
 				mylog("send_query: error - %s\n", CC_get_errormsg(self));
