@@ -2805,6 +2805,7 @@ inolog("type=%d concur=%d\n", stmt->options.cursor_type, stmt->options.scroll_co
 	if (PREPARED_PERMANENTLY == stmt->prepared)
 	{
 		/* already prepared */
+		retval = SQL_SUCCESS;
 		goto cleanup;
 	}
 
