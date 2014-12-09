@@ -2657,7 +2657,7 @@ cleanup:
 RETCODE	prepareParameters(StatementClass *stmt)
 {
 	ConnectionClass *conn = SC_get_conn(stmt);
-	
+
 	switch (stmt->prepared)
 	{
 		case PREPARED_TEMPORARILY:
@@ -2816,7 +2816,7 @@ inolog("type=%d concur=%d\n", stmt->options.cursor_type, stmt->options.scroll_co
 	if (buildPrepareStatement &&
 		 SQL_CONCUR_READ_ONLY == stmt->options.scroll_concurrency)
 	{
-		/* nothing to do here. It will be prepared before execution */
+		/* Nothing to do here. It will be prepared before execution. */
 		char		plan_name[32];
 		if (NAMED_PARSE_REQUEST == SC_get_prepare_method(stmt))
 			sprintf(plan_name, "_PLAN%p", stmt);
@@ -2826,15 +2826,12 @@ inolog("type=%d concur=%d\n", stmt->options.cursor_type, stmt->options.scroll_co
 		SC_set_planname(stmt, plan_name);
 		SC_set_prepared(stmt, plan_name[0] ? PREPARING_PERMANENTLY : PREPARING_TEMPORARILY);
 
-		//retval = Prepare_and_convert(stmt, qp, qb);
 		retval = SQL_SUCCESS;
 
 		goto cleanup;
 	}
 
 	/* Otherwise... */
-	SC_forget_unnamed(stmt);
-
 	if (ci->disallow_premature)
 		prepare_dummy_cursor = stmt->pre_executing;
 	if (prepare_dummy_cursor)
@@ -3518,7 +3515,7 @@ build_libpq_bind_params(StatementClass *stmt, const char *plan_name,
 	*paramValues = NULL;
 	*paramLengths = NULL;
 	*paramFormats = NULL;
-	
+
 	num_params = stmt->num_params;
 	if (num_params < 0)
 	{
@@ -3530,10 +3527,10 @@ build_libpq_bind_params(StatementClass *stmt, const char *plan_name,
 		SC_set_error(stmt, STMT_COUNT_FIELD_INCORRECT, "The # of binded parameters < the # of parameter markers", func);
 		return FALSE;
 	}
-	
+
 	if (QB_initialize(&qb, MIN_ALC_SIZE, stmt, NULL) < 0)
 		return FALSE;
-	
+
 	*paramValues = malloc(sizeof(char *) * num_params);
 	if (*paramValues == NULL)
 		goto cleanup;

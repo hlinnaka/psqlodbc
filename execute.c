@@ -771,8 +771,6 @@ inolog("ret=%d\n", ret);
 	}
 cleanup:
 #ifdef NOT_USED
-	if (SQL_NEED_DATA != ret)
-		SC_forget_unnamed(stmt); /* unnamed plan is no longer reliable */
 	if (!SC_is_prepare_statement(stmt) && ONCE_DESCRIBED == stmt->prepared)
 		SC_set_prepared(stmt, NOT_YET_PREPARED);
 #endif

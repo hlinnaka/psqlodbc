@@ -900,6 +900,10 @@ handle_pgres_error(ConnectionClass *self, const PGresult *pgres,
 		free(errmsg);
 }
 
+/*
+ * This is a libpq notice receiver callback, for handling incoming NOTICE
+ * messages while processing a query.
+ */
 typedef struct
 {
 	ConnectionClass *conn;
@@ -907,9 +911,6 @@ typedef struct
 	QResultClass *res;
 } notice_receiver_arg;
 
-/*
- * This is a libpq notice receiver callback.
- */
 void
 receive_libpq_notice(void *arg, const PGresult *pgres)
 {
@@ -920,8 +921,6 @@ receive_libpq_notice(void *arg, const PGresult *pgres)
 		handle_pgres_error(nrarg->conn, pgres, nrarg->comment, nrarg->res, FALSE);
 	}
 }
-
-CSTR std_cnf_strs = "standard_conforming_strings";
 
 static int	protocol3_opts_array(ConnectionClass *self, const char *opts[], const char *vals[])
 {

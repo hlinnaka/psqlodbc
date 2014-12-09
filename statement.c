@@ -543,21 +543,6 @@ SC_set_Result(StatementClass *self, QResultClass *res)
 	}
 }
 
-void
-SC_forget_unnamed(StatementClass *self)
-{
-	if (PREPARED_TEMPORARILY == self->prepared)
-	{
-		//SC_set_prepared(self, ONCE_DESCRIBED);
-		if (FALSE && !SC_IsExecuting(self))
-		{
-			QResultClass	*res = SC_get_Curres(self);
-			if (NULL != res && !res->dataFilled)
-				SC_set_Result(self, NULL);
-		}
-	}
-}
-
 /*
  *	Free parameters and free the memory from the
  *	data-at-execution parameters that was allocated in SQLPutData.
@@ -847,7 +832,7 @@ SC_recycle_statement(StatementClass *self)
 
 	if (SC_get_conn(self)->unnamed_prepared_stmt == self)
 		SC_get_conn(self)->unnamed_prepared_stmt = NULL;
-	
+
 	conn = SC_get_conn(self);
 	switch (self->status)
 	{
@@ -2074,7 +2059,6 @@ SC_execute(StatementClass *self)
 				CC_commit(conn);
 		}
 	}
-	SC_forget_unnamed(self);
 
 	if (CONN_DOWN != conn->status)
 		conn->status = oldstatus;
@@ -2499,7 +2483,7 @@ libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
 			return NULL;
 		}
 	}
-	
+
 	/* 1. Bind */
 	mylog("%s: bind plan_name=%s\n", func, plan_name);
 	if (!build_libpq_bind_params(stmt, plan_name,
@@ -2521,8 +2505,6 @@ libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
 			goto cleanup;
 		}
 	}
-
-	SC_forget_unnamed(stmt); /* unnamed plans are unavailable */
 
 	/* 2.5 Prepare and Describe if needed */
 	if (stmt->prepared == PREPARING_TEMPORARILY ||
@@ -2620,7 +2602,7 @@ inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_resul
 		QR_Destructor(newres);
 
 	ret = TRUE;
-	
+
 cleanup:
 	if (pgres)
 		PQclear(pgres);
@@ -2897,7 +2879,7 @@ cleanup:
 
 	if (pgres)
 		PQclear(pgres);
-	
+
 	if (retval)
 		return res;
 	else

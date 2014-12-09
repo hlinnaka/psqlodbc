@@ -434,7 +434,6 @@ enum
 #define SC_started_rbpoint(a)	((a->rbonerr & (1L << 4)) != 0)
 #define SC_unref_CC_error(a)	((a->ref_CC_error) = FALSE)
 #define SC_ref_CC_error(a)	((a->ref_CC_error) = TRUE)
-void SC_forget_unnamed(StatementClass *self);
 #define SC_can_parse_statement(a) (STMT_TYPE_SELECT == (a)->statement_type)
 /*
  * DECLARE CURSOR + FETCH can only be used with SELECT-type queries. And
