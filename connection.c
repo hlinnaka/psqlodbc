@@ -2610,8 +2610,6 @@ int	CC_discard_marked_objects(ConnectionClass *conn)
 static void
 LIBPQ_update_transaction_status(ConnectionClass *self)
 {
-	BOOL    was_in_error_trans = CC_is_in_error_trans(self);
-
 	if (!self->pqconn)
 		return;
 

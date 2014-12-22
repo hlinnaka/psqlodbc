@@ -2713,12 +2713,6 @@ mylog("sta_pidx=%d end_pidx=%d num_p=%d\n", sta_pidx, end_pidx, num_params);
 		}
 	}
 
-	/*
-	 * XXX: We need to do Prepare + Describe as two different round-trips
-	 * to the server, while without libpq we send a Parse and Describe
-	 * message followed by a single Sync.
-	 */
-
 	if (plan_name == NULL || plan_name[0] == '\0')
 		conn->unnamed_prepared_stmt = NULL;
 
@@ -2785,6 +2779,11 @@ ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
 	if (!res)
 		res = QR_Constructor();
 
+	/*
+	 * We need to do Prepare + Describe as two different round-trips to the
+	 * server, while before we switched to use libpq, we used to send a Parse
+	 * and Describe message followed by a single Sync.
+	 */
 	if (!ParseWithLibpq(stmt, plan_name, query_param, num_params, comment, res))
 		goto cleanup;
 
