@@ -2464,7 +2464,7 @@ libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
 	int		   *paramLengths = NULL;
 	int		   *paramFormats = NULL;
 	int			resultFormat;
-	PGresult   *pgres;
+	PGresult   *pgres = NULL;
 	int			pgresstatus;
 	QResultClass	*newres = NULL;
 	QResultClass *res;
@@ -2513,7 +2513,10 @@ libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
 		ProcessedStmt *pstmt;
 
 		if (!stmt->processed_statements)
-			prepareParametersNoDesc(stmt);
+		{
+			if (prepareParametersNoDesc(stmt) == SQL_ERROR)
+				goto cleanup;
+		}
 
 		pstmt = stmt->processed_statements;
 		pgres = PQexecParams(conn->pqconn,
@@ -2526,7 +2529,10 @@ libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
 	else
 	{
 		if (stmt->prepared == PREPARING_PERMANENTLY)
-			prepareParameters(stmt);
+		{
+			if (prepareParameters(stmt) == SQL_ERROR)
+				goto cleanup;
+		}
 
 		/* already prepared */
 		pgres = PQexecPrepared(conn->pqconn,
@@ -2535,8 +2541,6 @@ libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
 							   (const char **) paramValues, paramLengths, paramFormats,
 							   resultFormat);
 	}
-
-	/* 3. Receive results */
 	if (stmt->curr_param_result)
 	{
 		for (res = SC_get_Result(stmt); NULL != res && NULL != res->next; res = res->next) ;
@@ -2546,8 +2550,9 @@ libpq_bind_and_exec(StatementClass *stmt, const char *plan_name,
 
 	if (!res)
 		newres = res = QR_Constructor();
-inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_result);
 
+	/* 3. Receive results */
+inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_result);
 	pgresstatus = PQresultStatus(pgres);
 	switch (pgresstatus)
 	{
@@ -2573,12 +2578,12 @@ inolog("get_Result=%p %p %d\n", res, SC_get_Result(stmt), stmt->curr_param_resul
 			QR_set_rstatus(res, PORES_EMPTY_QUERY);
 			break;
 		case PGRES_NONFATAL_ERROR:
-			handle_pgres_error(conn, pgres, "send_query", res, FALSE);
+			handle_pgres_error(conn, pgres, "libpq_bind_and_exec", res, FALSE);
 			break;
 
 		case PGRES_BAD_RESPONSE:
 		case PGRES_FATAL_ERROR:
-			handle_pgres_error(conn, pgres, "send_query", res, TRUE);
+			handle_pgres_error(conn, pgres, "libpq_bind_and_exec", res, TRUE);
 			break;
 		case PGRES_TUPLES_OK:
 			if (!QR_from_PGresult(res, stmt, conn, NULL, &pgres))
@@ -2627,10 +2632,16 @@ cleanup:
 		return NULL;
 }
 
+/*
+ * Parse a query using libpq.
+ *
+ * 'res' is only passed here for error reporting purposes. If an error is
+ * encountered, it is set in 'res', and the function returns FALSE.
+ */
 BOOL
 ParseWithLibpq(StatementClass *stmt, const char *plan_name,
 			   const char *query,
-			   Int2 num_params, const char *comment)
+			   Int2 num_params, const char *comment, QResultClass *res)
 {
 	CSTR	func = "ParseWithLibpq";
 	ConnectionClass	*conn = SC_get_conn(stmt);
@@ -2714,7 +2725,10 @@ mylog("sta_pidx=%d end_pidx=%d num_p=%d\n", sta_pidx, end_pidx, num_params);
 	/* Prepare */
 	pgres = PQprepare(conn->pqconn, plan_name, query, num_params, paramTypes);
 	if (PQresultStatus(pgres) != PGRES_COMMAND_OK)
+	{
+		handle_pgres_error(conn, pgres, "ParseWithlibpq", res, TRUE);
 		goto cleanup;
+	}
 
 	if (stmt->plan_name)
 		SC_set_prepared(stmt, PREPARED_PERMANENTLY);
@@ -2737,6 +2751,13 @@ cleanup:
 }
 
 
+/*
+ * Parse and describe a query using libpq.
+ *
+ * Returns an empty result set that has the column information, or error code
+ * and message, filled in. If 'res' is not NULL, it is the result set
+ * returned, otherwise a new one is allocated.
+ */
 QResultClass *
 ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
 						  const char *query_param,
@@ -2747,9 +2768,7 @@ ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
 	ConnectionClass	*conn = SC_get_conn(stmt);
 	char	   *query = NULL;
 	Oid		   *paramTypes = NULL;
-	BOOL		retval = FALSE;
 	PGresult   *pgres = NULL;
-	QResultClass *newres = NULL;
 	int			num_p;
 	Int2		num_discard_params;
 	IPDFields	*ipdopts;
@@ -2763,27 +2782,35 @@ ParseAndDescribeWithLibpq(StatementClass *stmt, const char *plan_name,
 	if (!RequestStart(stmt, conn, func))
 		return NULL;
 
-	if (!ParseWithLibpq(stmt, plan_name, query_param, num_params, comment))
-	{
-		return NULL;
-	}
+	if (!res)
+		res = QR_Constructor();
+
+	if (!ParseWithLibpq(stmt, plan_name, query_param, num_params, comment, res))
+		goto cleanup;
 
 	/* Describe */
 	mylog("%s: describing plan_name=%s\n", func, plan_name);
 
 	pgres = PQdescribePrepared(conn->pqconn, plan_name);
-	if (PQresultStatus(pgres) != PGRES_COMMAND_OK)
+	switch (PQresultStatus(pgres))
 	{
-		/* skip the unexpected response if possible */
-		CC_set_error(conn, CONNECTION_BACKEND_CRAZY, "Unexpected result from PQdescribePrepared", func);
-		CC_on_abort(conn, CONN_DEAD);
+		case PGRES_COMMAND_OK:
+			/* expected */
+			break;
+		case PGRES_NONFATAL_ERROR:
+			handle_pgres_error(conn, pgres, "ParseAndDescribeWithLibpq", res, FALSE);
+			goto cleanup;
+		case PGRES_FATAL_ERROR:
+			handle_pgres_error(conn, pgres, "ParseAndDescribeWithLibpq", res, TRUE);
+			goto cleanup;
+		default:
+			/* skip the unexpected response if possible */
+			CC_set_error(conn, CONNECTION_BACKEND_CRAZY, "Unexpected result from PQdescribePrepared", func);
+			CC_on_abort(conn, CONN_DEAD);
 
-		mylog("send_query: error - %s\n", CC_get_errormsg(conn));
-		goto cleanup;
+			mylog("send_query: error - %s\n", CC_get_errormsg(conn));
+			goto cleanup;
 	}
-
-	if (!res)
-		newres = res = QR_Constructor();
 
 	/* Extrace parameter information from the result set */
 	num_p = PQnparams(pgres);
@@ -2866,12 +2893,7 @@ inolog("num_params=%d info=%d\n", stmt->num_params, num_p);
 		}
 	}
 
-	retval = TRUE;
-
 cleanup:
-	if (res != newres && NULL != newres)
-		QR_Destructor(newres);
-
 	if (paramTypes)
 		free(paramTypes);
 	if (query && query != query_param)
@@ -2880,10 +2902,7 @@ cleanup:
 	if (pgres)
 		PQclear(pgres);
 
-	if (retval)
-		return res;
-	else
-		return NULL;
+	return res;
 }
 
 enum {

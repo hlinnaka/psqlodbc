@@ -898,6 +898,8 @@ handle_pgres_error(ConnectionClass *self, const PGresult *pgres,
 	}
 	if (errmsg != errprimary)
 		free(errmsg);
+
+	LIBPQ_update_transaction_status(self);
 }
 
 /*
@@ -2636,10 +2638,11 @@ LIBPQ_update_transaction_status(ConnectionClass *self)
 			break;
 
 		case PQTRANS_ACTIVE:
+			/*
+			 * A query is still executing. It might have already aborted,
+			 * but all we know for sure is that we're in a transaction.
+			 */
 			CC_set_in_trans(self);
-			CC_set_no_error_trans(self);
-			if (was_in_error_trans)
-				CC_on_abort_partial(self);
 			break;
 
 		default: 			/* unknown status */
